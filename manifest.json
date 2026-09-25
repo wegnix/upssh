@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.wegnix.upssh",
   "name": "upSSH",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Wesley Farias",
   "license": "MIT",
   "description": "SSH access manager: groups, key or password login, passwords in a GPG vault.",
