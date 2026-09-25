@@ -38,6 +38,10 @@ The second line puts `upssh` on your `PATH` so the terminal UI works too. The
 bar widget and the Omarchy menu work without it — they call the copy that ships
 inside the plugin folder, by absolute path.
 
+If `~/.local/bin/upssh` already exists and was not installed by upSSH, nothing
+is overwritten: `link` refuses and offers `--name`, the installer says so and
+carries on, and the uninstaller leaves that file alone.
+
 Or clone and run the installer, which does both in one step:
 
 ```bash

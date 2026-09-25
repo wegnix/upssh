@@ -29,8 +29,29 @@ PYEOF
 fi
 
 command -v omarchy >/dev/null 2>&1 && omarchy plugin disable "$PLUGIN_ID" >/dev/null 2>&1
+# A pasta do plugin é nossa por construção; o comando em ~/.local/bin pode
+# não ser, por isso só sai se provarmos que nos pertence.
+owns_upssh() {
+  local path="$1" resolved
+  [[ -e $path || -L $path ]] || return 1
+  resolved=$(readlink -f "$path" 2>/dev/null) || return 1
+  case "$resolved" in
+  "$PLUGIN_DIR"/*) return 0 ;;
+  esac
+  # O marcador só existe a partir da 1.0.2; as versões anteriores são nossas
+  # na mesma e reconhecem-se por esta constante, que mais nada usa.
+  grep -qm1 -e "^# upssh-plugin-id: $PLUGIN_ID\$" -e '^EXPORT_MAGIC="upssh-export"$' "$resolved" 2>/dev/null
+}
+
+if [[ -e $BIN || -L $BIN ]]; then
+  if owns_upssh "$BIN"; then
+    rm -f "$BIN" && info "Command removed."
+  else
+    info "$BIN was not installed by upSSH — left untouched."
+  fi
+fi
+
 rm -rf "$PLUGIN_DIR" && info "Bar plugin removed."
-rm -f "$BIN" && info "Command removed."
 command -v omarchy >/dev/null 2>&1 && omarchy restart shell >/dev/null 2>&1
 
 if [[ -d $DATA_DIR ]]; then

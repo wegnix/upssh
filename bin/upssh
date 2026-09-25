@@ -1,4 +1,8 @@
 #!/bin/bash
+# upssh-plugin-id: io.github.wegnix.upssh
+# ^ Marcador de propriedade. O instalador e o desinstalador só tocam num
+#   ~/.local/bin/upssh que tenha esta linha ou que aponte para a pasta do
+#   plugin — um comando alheio com o mesmo nome fica intacto.
 
 # upSSH — gestor de acessos SSH para o Omarchy: grupos, login por chave ou
 # por senha, com as senhas num cofre GPG AES-256.
@@ -352,6 +356,19 @@ die() {
 warn() { has_tty && gum style --foreground 3 "$*" || printf '%s\n' "$*" >&2; }
 err() { has_tty && gum style --foreground 1 "$*" || printf '%s\n' "$*" >&2; }
 has_tty() { [[ -t 0 && -t 1 ]]; }
+
+# Um caminho pertence-nos se for um link para este script ou se o ficheiro
+# carregar o marcador do plugin. Tudo o resto é de outra pessoa.
+upssh_owns() {
+  local path="$1" resolved
+  [[ -e $path || -L $path ]] || return 1
+  resolved=$(readlink -f "$path" 2>/dev/null) || return 1
+  [[ $resolved == "$SELF" ]] && return 0
+  # O marcador só existe a partir da 1.0.2; as versões anteriores reconhecem-se
+  # por esta constante, que mais nada usa.
+  grep -qm1 -e '^# upssh-plugin-id: io.github.wegnix.upssh$' \
+    -e '^EXPORT_MAGIC="upssh-export"$' "$resolved" 2>/dev/null
+}
 
 # Mantém a janela aberta quando algo corre mal, para a mensagem ser legível.
 hold() { has_tty && read -n1 -rs -p "Enter para fechar..." && echo; }
@@ -1316,10 +1333,19 @@ group-rename)
 has-password) api_has_password ;;
 link)
   # Quem instalou pelo `omarchy plugin add` tem o comando dentro da pasta do
-  # plugin; isto põe-no ao alcance do terminal sem copiar nada.
+  # plugin; isto põe-no ao alcance do terminal sem copiar nada. Um ficheiro
+  # alheio com o mesmo nome nunca é substituído.
+  shift
+  target="$HOME/.local/bin/upssh"
+  [[ ${1:-} == --name && -n ${2:-} ]] && target="$HOME/.local/bin/$2"
+  if [[ -e $target || -L $target ]] && ! upssh_owns "$target"; then
+    printf '%s já existe e não foi criado pelo upSSH — nada foi alterado.\n' "$target" >&2
+    printf 'Usa outro nome:  upssh link --name <nome>\n' >&2
+    exit 1
+  fi
   mkdir -p "$HOME/.local/bin"
-  ln -sfn "$SELF" "$HOME/.local/bin/upssh"
-  printf '%s -> %s\n' "$HOME/.local/bin/upssh" "$SELF"
+  ln -sfn "$SELF" "$target"
+  printf '%s -> %s\n' "$target" "$SELF"
   ;;
 lang)
   shift

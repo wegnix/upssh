@@ -47,8 +47,31 @@ command -v omarchy-shell >/dev/null 2>&1 || {
 }
 
 # -------------------------------------------------------------------- ficheiros
-install -Dm755 "$SRC/bin/upssh" "$BIN_DIR/upssh"
-info "command   → $BIN_DIR/upssh"
+# Nunca escrever por cima de um comando que não é nosso: um `upssh` alheio
+# em ~/.local/bin fica intacto e o widget continua a funcionar sem ele.
+owns_upssh() {
+  local path="$1" resolved
+  [[ -e $path || -L $path ]] || return 1
+  resolved=$(readlink -f "$path" 2>/dev/null) || return 1
+  case "$resolved" in
+  "$PLUGIN_DIR"/*) return 0 ;;
+  esac
+  # O marcador só existe a partir da 1.0.2; as versões anteriores são nossas
+  # na mesma e reconhecem-se por esta constante, que mais nada usa.
+  grep -qm1 -e "^# upssh-plugin-id: $PLUGIN_ID\$" -e '^EXPORT_MAGIC="upssh-export"$' "$resolved" 2>/dev/null
+}
+
+if [[ -e $BIN_DIR/upssh || -L $BIN_DIR/upssh ]] && ! owns_upssh "$BIN_DIR/upssh"; then
+  LINK_SKIPPED=1
+  warn "$BIN_DIR/upssh already exists and was not installed by upSSH — left untouched."
+  info "The bar widget and the Omarchy menu do not need it."
+  info "For the terminal UI, run the bundled copy or pick another name:"
+  info "  $PLUGIN_DIR/bin/upssh"
+  info "  $PLUGIN_DIR/bin/upssh link --name upssh-plugin"
+else
+  install -Dm755 "$SRC/bin/upssh" "$BIN_DIR/upssh"
+  info "command   → $BIN_DIR/upssh"
+fi
 
 if [[ -z ${NO_SHELL:-} ]]; then
   mkdir -p "$PLUGIN_DIR"
@@ -67,13 +90,16 @@ case ":$PATH:" in
 *) warn "$BIN_DIR is not on your PATH — add it to your shell profile." ;;
 esac
 
+UPSSH_CMD="$BIN_DIR/upssh"
+[[ -n ${LINK_SKIPPED:-} ]] && UPSSH_CMD="$PLUGIN_DIR/bin/upssh"
+
 # --------------------------------------------------------------------- idioma
 echo
 if [[ -t 0 ]]; then
   read -rp "  Language / Idioma — [e]nglish or [p]ortuguês? (e/p) " answer
   case "${answer,,}" in
-  p*) "$BIN_DIR/upssh" lang pt >/dev/null && info "Language set to Portuguese." ;;
-  e*) "$BIN_DIR/upssh" lang en >/dev/null && info "Language set to English." ;;
+  p*) "$UPSSH_CMD" lang pt >/dev/null && info "Language set to Portuguese." ;;
+  e*) "$UPSSH_CMD" lang en >/dev/null && info "Language set to English." ;;
   *) info "Keeping the language detected from \$LANG." ;;
   esac
 fi
@@ -94,10 +120,14 @@ if [[ -z ${NO_SHELL:-} ]]; then
   omarchy restart shell >/dev/null 2>&1 || true
 fi
 
-"$BIN_DIR/upssh" menu-sync >/dev/null 2>&1 && info "Omarchy menu synced."
+"$UPSSH_CMD" menu-sync >/dev/null 2>&1 && info "Omarchy menu synced."
 
 echo
 bold "Done."
-info "Run 'upssh' for the terminal UI, or click the upSSH icon in the bar."
+if [[ -n ${LINK_SKIPPED:-} ]]; then
+  info "Click the upSSH icon in the bar, or run $PLUGIN_DIR/bin/upssh for the terminal UI."
+else
+  info "Run 'upssh' for the terminal UI, or click the upSSH icon in the bar."
+fi
 info "Super → type 'ssh' opens the menu with your servers."
 echo
