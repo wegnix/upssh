@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.wegnix.upssh",
+  "name": "upSSH",
+  "version": "1.0.0",
+  "author": "Wesley Farias",
+  "license": "MIT",
+  "description": "SSH access manager: groups, key or password login, passwords in a GPG vault.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "UpsshPanel.qml"
+  },
+  "barWidget": {
+    "displayName": "upSSH",
+    "description": "Connect, register and edit SSH access · right click syncs the Omarchy menu",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "aliases": [
+      "ssh",
+      "upssh",
+      "servidores"
+    ]
+  }
+}

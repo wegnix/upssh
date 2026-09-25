@@ -1,0 +1,11 @@
+# Dados do utilizador nunca pertencem ao repositório: os servidores, o cofre
+# de senhas e as exportações vivem em ~/.config/upssh.
+servers.json
+secrets.gpg
+config.json
+upssh-*.json
+upssh-*.gpg
+pending-secrets.json
+
+*.bak
+*.bak.*

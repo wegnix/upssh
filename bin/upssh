@@ -1,0 +1,1382 @@
+#!/bin/bash
+
+# upSSH — gestor de acessos SSH para o Omarchy: grupos, login por chave ou
+# por senha, com as senhas num cofre GPG AES-256.
+# omarchy:args=[connect <id>|add|edit|remove|list|passwd|groups|menu-sync|vault-init|master]
+
+set -uo pipefail
+
+CONFIG_DIR="${UPSSH_DIR:-$HOME/.config/upssh}"
+SERVERS="$CONFIG_DIR/servers.json"
+SECRETS="$CONFIG_DIR/secrets.gpg"
+PENDING="$CONFIG_DIR/pending-secrets.json"
+MENU_FILE="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
+BEGIN_MARK="  // >>> upssh (gerado automaticamente - nao editar) >>>"
+END_MARK="  // <<< upssh <<<"
+
+MASTER=""
+
+# O pinentry precisa de saber o terminal quando é chamado a partir de um.
+[[ -t 0 ]] && export GPG_TTY="${GPG_TTY:-$(tty 2>/dev/null)}"
+
+# Omarchy exports theme-matched gum styling; pick it up when available.
+if command -v omarchy-restart-gum >/dev/null 2>&1; then
+  source omarchy-restart-gum >/dev/null 2>&1 || true
+fi
+
+# ---------------------------------------------------------------- traduções
+
+CONFIG_FILE="$CONFIG_DIR/config.json"
+
+# Idioma: o que estiver em config.json manda; sem isso segue o $LANG do
+# sistema, e na dúvida fica em inglês.
+detect_lang() {
+  local l
+  if [[ -f $CONFIG_FILE ]]; then
+    l=$(jq -r '.lang // empty' "$CONFIG_FILE" 2>/dev/null)
+    [[ $l == pt || $l == en ]] && { printf '%s' "$l"; return; }
+  fi
+  case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+  pt_* | pt) printf 'pt' ;;
+  *) printf 'en' ;;
+  esac
+}
+
+UPSSH_LANG=$(detect_lang)
+
+set_lang() {
+  local l="${1:-}"
+  [[ $l == pt || $l == en ]] || { printf 'Idioma inválido: %s (usa pt ou en)\n' "$l" >&2; return 2; }
+  mkdir -p "$CONFIG_DIR"
+  local tmp
+  tmp=$(mktemp "$CONFIG_DIR/.cfg.XXXXXX") || return 1
+  if [[ -f $CONFIG_FILE ]]; then
+    jq --arg l "$l" '.lang = $l' "$CONFIG_FILE" >"$tmp" || { rm -f "$tmp"; return 1; }
+  else
+    jq -n --arg l "$l" '{lang: $l}' >"$tmp" || { rm -f "$tmp"; return 1; }
+  fi
+  chmod 600 "$tmp"
+  mv "$tmp" "$CONFIG_FILE"
+  UPSSH_LANG="$l"
+  menu_sync >/dev/null 2>&1
+}
+
+declare -A MSG_pt MSG_en
+
+# Catálogo de mensagens. Uma chave por linha, os dois idiomas lado a lado.
+MSG_pt[invalid_json]="JSON inválido, alteração descartada."
+MSG_en[invalid_json]="Invalid JSON, change discarded."
+MSG_pt[master_create]="Criar senha mestra do cofre:"
+MSG_en[master_create]="Create the vault master password:"
+MSG_pt[master_confirm]="Confirmar senha mestra:"
+MSG_en[master_confirm]="Confirm master password:"
+MSG_pt[pass_mismatch]="As senhas não coincidem."
+MSG_en[pass_mismatch]="The passwords do not match."
+MSG_pt[vault_created]="Cofre criado em %s"
+MSG_en[vault_created]="Vault created at %s"
+MSG_pt[master_prompt]="Senha mestra do cofre:"
+MSG_en[master_prompt]="Vault master password:"
+MSG_pt[wrong_pass]="Senha incorreta."
+MSG_en[wrong_pass]="Wrong password."
+MSG_pt[vault_read_fail]="Não foi possível ler o cofre."
+MSG_en[vault_read_fail]="Could not read the vault."
+MSG_pt[master_new]="Nova senha mestra:"
+MSG_en[master_new]="New master password:"
+MSG_pt[master_new_confirm]="Confirmar nova senha mestra:"
+MSG_en[master_new_confirm]="Confirm the new master password:"
+MSG_pt[master_changed]="Senha mestra alterada."
+MSG_en[master_changed]="Master password changed."
+MSG_pt[pending_imported]="Senhas importadas para o cofre e ficheiro temporário destruído."
+MSG_en[pending_imported]="Passwords imported into the vault; the temporary file was shredded."
+MSG_pt[pending_fail]="Falha ao importar as senhas pendentes."
+MSG_en[pending_fail]="Could not import the pending passwords."
+MSG_pt[vault_ready]="Cofre pronto."
+MSG_en[vault_ready]="Vault ready."
+MSG_pt[hostkey_fetch_fail]="Não consegui obter a chave de %s:%s (host inacessível?)."
+MSG_en[hostkey_fetch_fail]="Could not fetch the host key for %s:%s (host unreachable?)."
+MSG_pt[hostkey_first]="Primeiro acesso a %s:%s — chave ainda não conhecida."
+MSG_en[hostkey_first]="First connection to %s:%s — host key not known yet."
+MSG_pt[hostkey_trust]="Confiar nesta chave e gravá-la em ~/.ssh/known_hosts?"
+MSG_en[hostkey_trust]="Trust this key and save it to ~/.ssh/known_hosts?"
+MSG_pt[hostkey_declined]="Ligação cancelada: chave não aceite."
+MSG_en[hostkey_declined]="Connection cancelled: key not accepted."
+MSG_pt[hostkey_saved]="Chave gravada."
+MSG_en[hostkey_saved]="Key saved."
+MSG_pt[usage_connect]="Uso: upssh connect <id>"
+MSG_en[usage_connect]="Usage: upssh connect <id>"
+MSG_pt[not_found]="Servidor não encontrado: %s"
+MSG_en[not_found]="Server not found: %s"
+MSG_pt[key_missing]="Chave privada não encontrada: %s"
+MSG_en[key_missing]="Private key not found: %s"
+MSG_pt[key_perms_fixed]="Permissões da chave corrigidas para 600: %s"
+MSG_en[key_perms_fixed]="Key permissions tightened to 600: %s"
+MSG_pt[pass_refused]="Senha recusada por %s. Corrige com: upssh passwd"
+MSG_en[pass_refused]="Password refused by %s. Fix it with: upssh passwd"
+MSG_pt[conn_error]="A ligação terminou com erro (código %s)."
+MSG_en[conn_error]="The connection ended with an error (code %s)."
+MSG_pt[no_stored_pass]="Sem senha guardada para '%s' — o servidor vai pedi-la."
+MSG_en[no_stored_pass]="No stored password for '%s' — the server will ask for it."
+MSG_pt[group_new_option]="+ Novo grupo"
+MSG_en[group_new_option]="+ New group"
+MSG_pt[group_new_name]="Nome do novo grupo:"
+MSG_en[group_new_name]="New group name:"
+MSG_pt[ph_group]="Ex.: Upnet"
+MSG_en[ph_group]="e.g. Production"
+MSG_pt[f_name]="Nome de identificação:"
+MSG_en[f_name]="Display name:"
+MSG_pt[ph_name]="Ex.: Docker 01"
+MSG_en[ph_name]="e.g. Docker 01"
+MSG_pt[req_name]="O nome é obrigatório."
+MSG_en[req_name]="The name is required."
+MSG_pt[keep_group]="Manter o grupo '%s'?"
+MSG_en[keep_group]="Keep the group '%s'?"
+MSG_pt[f_group]="Grupo:"
+MSG_en[f_group]="Group:"
+MSG_pt[f_host]="Host (IP ou DNS):"
+MSG_en[f_host]="Host (IP or DNS):"
+MSG_pt[req_host]="O host é obrigatório."
+MSG_en[req_host]="The host is required."
+MSG_pt[f_port]="Porta (Enter = 22):"
+MSG_en[f_port]="Port (Enter = 22):"
+MSG_pt[bad_port]="Porta inválida: %s"
+MSG_en[bad_port]="Invalid port: %s"
+MSG_pt[f_user]="Login/Utilizador:"
+MSG_en[f_user]="Login / user:"
+MSG_pt[req_user]="O utilizador é obrigatório."
+MSG_en[req_user]="The user is required."
+MSG_pt[f_auth]="Método de autenticação:"
+MSG_en[f_auth]="Authentication method:"
+MSG_pt[auth_key]="Chave SSH / agente"
+MSG_en[auth_key]="SSH key / agent"
+MSG_pt[auth_pass]="Senha (guardada encriptada)"
+MSG_en[auth_pass]="Password (stored encrypted)"
+MSG_pt[f_identity]="Ficheiro de chave privada (vazio = chaves/agente por omissão):"
+MSG_en[f_identity]="Private key file (empty = default keys / agent):"
+MSG_pt[f_options]="Opções extra do ssh (opcional):"
+MSG_en[f_options]="Extra ssh options (optional):"
+MSG_pt[f_pass_for]="Senha de %s@%s (vazio = manter/omitir):"
+MSG_en[f_pass_for]="Password for %s@%s (empty = keep / skip):"
+MSG_pt[pass_save_fail]="Não foi possível guardar a senha."
+MSG_en[pass_save_fail]="Could not store the password."
+MSG_pt[saved_as]="Guardado: %s (%s)"
+MSG_en[saved_as]="Saved: %s (%s)"
+MSG_pt[no_servers]="Sem servidores registados."
+MSG_en[no_servers]="No servers registered."
+MSG_pt[which_remove]="Remover qual servidor?"
+MSG_en[which_remove]="Remove which server?"
+MSG_pt[confirm_remove]="Remover '%s' definitivamente?"
+MSG_en[confirm_remove]="Permanently remove '%s'?"
+MSG_pt[removed]="Removido: %s"
+MSG_en[removed]="Removed: %s"
+MSG_pt[which_pass]="Definir senha de qual servidor?"
+MSG_en[which_pass]="Set the password for which server?"
+MSG_pt[new_pass]="Nova senha:"
+MSG_en[new_pass]="New password:"
+MSG_pt[empty_pass]="Senha vazia."
+MSG_en[empty_pass]="Empty password."
+MSG_pt[pass_saved]="Senha guardada no cofre."
+MSG_en[pass_saved]="Password stored in the vault."
+MSG_pt[which_group_rename]="Renomear qual grupo?"
+MSG_en[which_group_rename]="Rename which group?"
+MSG_pt[new_name]="Novo nome:"
+MSG_en[new_name]="New name:"
+MSG_pt[group_renamed]="Grupo renomeado para '%s'."
+MSG_en[group_renamed]="Group renamed to '%s'."
+MSG_pt[which_move]="Mover qual servidor?"
+MSG_en[which_move]="Move which server?"
+MSG_pt[new_group]="Novo grupo:"
+MSG_en[new_group]="New group:"
+MSG_pt[moved_to]="Movido para '%s'."
+MSG_en[moved_to]="Moved to '%s'."
+MSG_pt[menu_sync_fail]="Falha ao sincronizar o menu do Omarchy."
+MSG_en[menu_sync_fail]="Could not sync the Omarchy menu."
+MSG_pt[menu_synced]="Menu sincronizado."
+MSG_en[menu_synced]="Menu synced."
+MSG_pt[vault_none]="Não há cofre para exportar senhas."
+MSG_en[vault_none]="There is no vault to export passwords from."
+MSG_pt[vault_open_fail]="Não consegui abrir o cofre."
+MSG_en[vault_open_fail]="Could not open the vault."
+MSG_pt[export_pass]="Senha para cifrar o ficheiro exportado:"
+MSG_en[export_pass]="Password to encrypt the exported file:"
+MSG_pt[export_pass_confirm]="Confirmar a senha do ficheiro:"
+MSG_en[export_pass_confirm]="Confirm the file password:"
+MSG_pt[export_encrypt_fail]="Falha ao cifrar a exportação."
+MSG_en[export_encrypt_fail]="Could not encrypt the export."
+MSG_pt[exported_secrets]="Exportado com senhas (AES-256): %s"
+MSG_en[exported_secrets]="Exported with passwords (AES-256): %s"
+MSG_pt[exported_plain]="Exportado (sem senhas): %s"
+MSG_en[exported_plain]="Exported (no passwords): %s"
+MSG_pt[import_pass]="Senha do ficheiro importado:"
+MSG_en[import_pass]="Password of the imported file:"
+MSG_pt[decrypt_fail]="Não consegui decifrar (senha errada?)."
+MSG_en[decrypt_fail]="Could not decrypt (wrong password?)."
+MSG_pt[is_a_dir]="Isso é uma pasta, não um ficheiro: %s"
+MSG_en[is_a_dir]="That is a folder, not a file: %s"
+MSG_pt[file_missing]="Ficheiro não encontrado: %s"
+MSG_en[file_missing]="File not found: %s"
+MSG_pt[not_an_export]="Não parece uma exportação do upSSH."
+MSG_en[not_an_export]="This does not look like an upSSH export."
+MSG_pt[conflict_on]="Conflito em '%s' (id %s):"
+MSG_en[conflict_on]="Conflict on '%s' (id %s):"
+MSG_pt[conflict_current]="  actual:    %s\\n"
+MSG_en[conflict_current]="  current:   %s\\n"
+MSG_pt[conflict_incoming]="  importado: %s\\n"
+MSG_en[conflict_incoming]="  incoming:  %s\\n"
+MSG_pt[c_replace]="Substituir pelo importado"
+MSG_en[c_replace]="Replace with the imported one"
+MSG_pt[c_keep]="Manter o actual"
+MSG_en[c_keep]="Keep the current one"
+MSG_pt[c_copy]="Importar como cópia"
+MSG_en[c_copy]="Import as a copy"
+MSG_pt[c_replace_all]="Substituir — e todos os seguintes"
+MSG_en[c_replace_all]="Replace — and all the following"
+MSG_pt[c_keep_all]="Manter — e todos os seguintes"
+MSG_en[c_keep_all]="Keep — and all the following"
+MSG_pt[c_copy_all]="Importar como cópia — e todos os seguintes"
+MSG_en[c_copy_all]="Import as a copy — and all the following"
+MSG_pt[c_what]="O que fazer?"
+MSG_en[c_what]="What should I do?"
+MSG_pt[import_no_pass]="Servidores importados, mas as senhas ficaram de fora."
+MSG_en[import_no_pass]="Servers imported, but the passwords were left out."
+MSG_pt[import_pass_fail]="Falha ao gravar as senhas importadas."
+MSG_en[import_pass_fail]="Could not store the imported passwords."
+MSG_pt[import_summary]="Importados %s: %s novos, %s substituídos, %s cópias, %s ignorados."
+MSG_en[import_summary]="Imported %s: %s new, %s replaced, %s copies, %s skipped."
+MSG_pt[export_with_pass]="Incluir as senhas guardadas (ficheiro cifrado)?"
+MSG_en[export_with_pass]="Include the stored passwords (encrypted file)?"
+MSG_pt[enter_back]="Enter para voltar"
+MSG_en[enter_back]="Enter to go back"
+MSG_pt[m_add]="Adicionar servidor"
+MSG_en[m_add]="Add server"
+MSG_pt[m_edit]="Editar servidor"
+MSG_en[m_edit]="Edit server"
+MSG_pt[m_remove]="Remover servidor"
+MSG_en[m_remove]="Remove server"
+MSG_pt[m_pass]="Definir/alterar senha"
+MSG_en[m_pass]="Set / change password"
+MSG_pt[m_move]="Mover servidor de grupo"
+MSG_en[m_move]="Move server to another group"
+MSG_pt[m_rename]="Renomear grupo"
+MSG_en[m_rename]="Rename group"
+MSG_pt[m_listall]="Listar tudo"
+MSG_en[m_listall]="List everything"
+MSG_pt[m_export]="Exportar servidores"
+MSG_en[m_export]="Export servers"
+MSG_pt[m_import]="Importar servidores"
+MSG_en[m_import]="Import servers"
+MSG_pt[m_sync]="Sincronizar menu do Omarchy"
+MSG_en[m_sync]="Sync the Omarchy menu"
+MSG_pt[m_master]="Alterar senha mestra do cofre"
+MSG_en[m_master]="Change the vault master password"
+MSG_pt[m_lang]="Idioma / Language"
+MSG_en[m_lang]="Language / Idioma"
+MSG_pt[lang_set]="Idioma alterado."
+MSG_en[lang_set]="Language changed."
+MSG_pt[m_back]="Voltar"
+MSG_en[m_back]="Back"
+MSG_pt[m_manage]="Gerir acessos SSH:"
+MSG_en[m_manage]="Manage SSH access:"
+MSG_pt[which_edit]="Editar qual servidor?"
+MSG_en[which_edit]="Edit which server?"
+MSG_pt[pending_wait]="Há senhas importadas à espera de serem cifradas."
+MSG_en[pending_wait]="There are imported passwords waiting to be encrypted."
+MSG_pt[pending_ask]="Criar/abrir o cofre agora e importá-las?"
+MSG_en[pending_ask]="Create / open the vault now and import them?"
+MSG_pt[no_servers_yet]="Nenhum servidor registado ainda."
+MSG_en[no_servers_yet]="No servers registered yet."
+MSG_pt[m_all]="Todos"
+MSG_en[m_all]="All"
+MSG_pt[m_manage_short]="Gerir"
+MSG_en[m_manage_short]="Manage"
+MSG_pt[m_quit]="Sair"
+MSG_en[m_quit]="Quit"
+MSG_pt[pick_group]="upSSH — selecione o grupo:"
+MSG_en[pick_group]="upSSH — pick a group:"
+MSG_pt[pick_server_all]="Servidor (todos os grupos):"
+MSG_en[pick_server_all]="Server (all groups):"
+MSG_pt[pick_server_group]="Servidor — %s:"
+MSG_en[pick_server_group]="Server — %s:"
+MSG_pt[filter_ph]="filtrar…"
+MSG_en[filter_ph]="filter…"
+MSG_pt[menu_root_desc]="Acessos SSH"
+MSG_en[menu_root_desc]="SSH access"
+MSG_pt[menu_bygroup]="Por grupo"
+MSG_en[menu_bygroup]="By group"
+MSG_pt[menu_bygroup_desc]="Navegar os acessos agrupados"
+MSG_en[menu_bygroup_desc]="Browse access grouped"
+MSG_pt[menu_manage]="Gerir servidores"
+MSG_en[menu_manage]="Manage servers"
+MSG_pt[menu_manage_desc]="Adicionar, editar ou remover acessos SSH"
+MSG_en[menu_manage_desc]="Add, edit or remove SSH access"
+MSG_pt[col_group]="GRUPO"
+MSG_en[col_group]="GROUP"
+MSG_pt[col_name]="NOME"
+MSG_en[col_name]="NAME"
+MSG_pt[col_dest]="DESTINO"
+MSG_en[col_dest]="TARGET"
+MSG_pt[col_id]="ID"
+MSG_en[col_id]="ID"
+MSG_pt[unknown_cmd]="Comando desconhecido: %s (usa --help)"
+MSG_en[unknown_cmd]="Unknown command: %s (try --help)"
+MSG_pt[missing_deps]="Dependências em falta: %s"
+MSG_en[missing_deps]="Missing dependencies: %s"
+
+
+# t <chave> [args...] — devolve a mensagem traduzida, com printf por baixo,
+# para os %s entrarem na ordem certa em qualquer idioma.
+t() {
+  local key="$1"
+  shift
+  local fmt
+  if [[ $UPSSH_LANG == pt ]]; then
+    fmt="${MSG_pt[$key]-}"
+  else
+    fmt="${MSG_en[$key]-}"
+  fi
+  [[ -n $fmt ]] || fmt="${MSG_en[$key]-$key}"
+  # shellcheck disable=SC2059
+  printf "$fmt" "$@"
+}
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+warn() { has_tty && gum style --foreground 3 "$*" || printf '%s\n' "$*" >&2; }
+err() { has_tty && gum style --foreground 1 "$*" || printf '%s\n' "$*" >&2; }
+has_tty() { [[ -t 0 && -t 1 ]]; }
+
+# Mantém a janela aberta quando algo corre mal, para a mensagem ser legível.
+hold() { has_tty && read -n1 -rs -p "Enter para fechar..." && echo; }
+
+ok() { has_tty && gum style --foreground 2 "$*" || printf '%s\n' "$*"; }
+
+# Pede um segredo. Com terminal usa o gum; sem terminal (widget da barra, `!`
+# no Claude Code, hook) cai no pinentry gráfico, que abre a sua própria janela.
+ask_secret() {
+  local prompt="$1" out pin
+  if has_tty; then
+    gum input --password --header "$prompt"
+    return $?
+  fi
+  local pe
+  pe=$(command -v pinentry-gnome3 || command -v pinentry-gtk || command -v pinentry-qt || command -v pinentry) ||
+    { printf 'Sem terminal e sem pinentry disponível.\n' >&2; return 1; }
+  out=$(printf 'SETTITLE upSSH\nSETPROMPT %s\nSETDESC %s\nGETPIN\nBYE\n' \
+    "Senha:" "$prompt" | "$pe" 2>/dev/null)
+  pin=$(awk '/^D /{ print substr($0, 3); found=1 } END { exit !found }' <<<"$out") || return 1
+  # pinentry devolve o valor com percent-encoding (%25, %0A, ...).
+  printf '%s' "$pin" | python3 -c 'import sys,re; d=sys.stdin.read(); sys.stdout.write(re.sub(r"%([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), d))'
+}
+
+require() {
+  local missing=()
+  for c in "$@"; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
+  ((${#missing[@]})) && die "$(t missing_deps "${missing[*]}")"
+}
+
+slugify() {
+  printf '%s' "$1" |
+    iconv -t ascii//TRANSLIT 2>/dev/null |
+    tr '[:upper:]' '[:lower:]' |
+    sed -e 's/[^a-z0-9]\+/-/g' -e 's/^-\+//' -e 's/-\+$//'
+}
+
+ensure_store() {
+  mkdir -p "$CONFIG_DIR"
+  chmod 700 "$CONFIG_DIR"
+  if [[ ! -f $SERVERS ]]; then
+    printf '%s\n' '{"version":1,"servers":[]}' >"$SERVERS"
+    chmod 600 "$SERVERS"
+  fi
+}
+
+save_servers() {
+  local tmp
+  tmp=$(mktemp "$CONFIG_DIR/.servers.XXXXXX") || return 1
+  cat >"$tmp" || { rm -f "$tmp"; return 1; }
+  jq -e . "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; err "$(t invalid_json)"; return 1; }
+  chmod 600 "$tmp"
+  mv "$tmp" "$SERVERS"
+}
+
+# ---------------------------------------------------------------- cofre (gpg)
+
+# Leitura: sem MASTER em memória deixa-se o gpg-agent tratar do pedido e da
+# cache — a senha mestra fica na memória protegida do agente, nunca neste
+# processo, e as ligações seguintes não voltam a pedi-la enquanto o TTL durar.
+# Com MASTER (fluxos de escrita) usa-se o modo loopback, que não mexe na cache.
+secrets_read() {
+  if [[ -n $MASTER ]]; then
+    gpg --quiet --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
+      --decrypt "$SECRETS" 3<<<"$MASTER" 2>/dev/null
+  else
+    gpg --quiet --decrypt "$SECRETS" 2>/dev/null
+  fi
+}
+
+secrets_write() {
+  local tmp
+  tmp=$(mktemp "$CONFIG_DIR/.secrets.XXXXXX") || return 1
+  if gpg --quiet --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
+    --symmetric --cipher-algo AES256 --output "$tmp" 3<<<"$MASTER"; then
+    chmod 600 "$tmp"
+    mv "$tmp" "$SECRETS"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+vault_create() {
+  local a b
+  a=$(ask_secret "$(t master_create)") || return 1
+  b=$(ask_secret "$(t master_confirm)") || return 1
+  [[ -n $a && $a == "$b" ]] || { err "$(t pass_mismatch)"; return 1; }
+  MASTER="$a"
+  printf '%s' '{}' | secrets_write || { MASTER=""; return 1; }
+  ok "$(t vault_created "$SECRETS")"
+}
+
+unlock() {
+  [[ -n $MASTER ]] && return 0
+  if [[ ! -f $SECRETS ]]; then
+    vault_create
+    return
+  fi
+  local i
+  for i in 1 2 3; do
+    MASTER=$(ask_secret "$(t master_prompt)") || { MASTER=""; return 1; }
+    secrets_read >/dev/null 2>&1 && return 0
+    err "$(t wrong_pass)"
+    MASTER=""
+  done
+  return 1
+}
+
+get_password() {
+  [[ -f $SECRETS ]] || return 1
+  secrets_read | jq -r --arg id "$1" '.[$id] // empty'
+}
+
+set_password() {
+  unlock || return 1
+  local cur
+  cur=$(secrets_read) || return 1
+  printf '%s' "$cur" | jq --arg id "$1" --arg pw "$2" '.[$id] = $pw' | secrets_write
+}
+
+del_password() {
+  [[ -f $SECRETS ]] || return 0
+  unlock || return 1
+  local cur
+  cur=$(secrets_read) || return 1
+  printf '%s' "$cur" | jq --arg id "$1" 'del(.[$id])' | secrets_write
+}
+
+change_master() {
+  [[ -f $SECRETS ]] || { vault_create; return; }
+  unlock || return 1
+  local plain a b
+  plain=$(secrets_read) || { err "$(t vault_read_fail)"; return 1; }
+  a=$(ask_secret "$(t master_new)") || return 1
+  b=$(ask_secret "$(t master_new_confirm)") || return 1
+  [[ -n $a && $a == "$b" ]] || { err "$(t pass_mismatch)"; return 1; }
+  MASTER="$a"
+  printf '%s' "$plain" | secrets_write && ok "$(t master_changed)"
+}
+
+# Importa um ficheiro de senhas em texto limpo para dentro do cofre e apaga-o.
+vault_init() {
+  ensure_store
+  if [[ ! -f $SECRETS ]]; then
+    vault_create || return 1
+  else
+    unlock || return 1
+  fi
+  if [[ -f $PENDING ]]; then
+    local cur
+    cur=$(secrets_read) || return 1
+    if jq -s '.[0] * .[1]' <(printf '%s' "$cur") "$PENDING" | secrets_write; then
+      shred -u "$PENDING" 2>/dev/null || rm -f "$PENDING"
+      ok "$(t pending_imported)"
+    else
+      err "$(t pending_fail)"
+      return 1
+    fi
+  fi
+  ok "$(t vault_ready)"
+}
+
+# ------------------------------------------------------------------- consulta
+
+server_json() { jq -c --arg id "$1" '.servers[] | select(.id == $id)' "$SERVERS"; }
+
+server_exists() { [[ -n $(server_json "$1") ]]; }
+
+groups_list() { jq -r '[.servers[].group] | unique | .[]' "$SERVERS"; }
+
+new_id() {
+  local base id n=2
+  base=$(slugify "$1")
+  [[ -n $base ]] || base="servidor"
+  id="$base"
+  while server_exists "$id"; do
+    id="$base-$n"
+    ((n++))
+  done
+  printf '%s' "$id"
+}
+
+cmd_list() {
+  ensure_store
+  {
+    printf '%s\t%s\t%s\tAUTH\t%s\n' "$(t col_group)" "$(t col_name)" "$(t col_dest)" "$(t col_id)"
+    jq -r '.servers | sort_by(.group, .name) | .[] |
+      [.group, .name, (.user + "@" + .host + ":" + (.port|tostring)), .auth, .id] | @tsv' "$SERVERS"
+  } | column -t -s $'\t'
+}
+
+confirm() {
+  has_tty || return 1
+  gum confirm "$*" --default=no
+}
+
+# Primeiro acesso a um host: em vez de deixar o ssh falhar (o sshpass nem
+# chega a mostrar o pedido), mostra-se a impressão digital da chave e pede-se
+# confirmação antes de a gravar. É o mesmo grau de confiança que responder
+# "yes" ao ssh, mas com a impressão digital à vista.
+ensure_host_key() {
+  local host="$1" port="$2" target scan
+  [[ $port == 22 ]] && target="$host" || target="[$host]:$port"
+  ssh-keygen -F "$target" >/dev/null 2>&1 && return 0
+
+  scan=$(ssh-keyscan -p "$port" -T 8 "$host" 2>/dev/null | grep -v '^#')
+  if [[ -z $scan ]]; then
+    err "$(t hostkey_fetch_fail "$host" "$port")"
+    return 1
+  fi
+
+  warn "$(t hostkey_first "$host" "$port")"
+  printf '%s\n' "$scan" | ssh-keygen -lf - 2>/dev/null | sed 's/^/  /'
+  if ! confirm "$(t hostkey_trust)"; then
+    err "$(t hostkey_declined)"
+    return 1
+  fi
+
+  mkdir -p "$HOME/.ssh"
+  chmod 700 "$HOME/.ssh"
+  printf '%s\n' "$scan" >>"$HOME/.ssh/known_hosts"
+  chmod 600 "$HOME/.ssh/known_hosts"
+  ok "$(t hostkey_saved)"
+}
+
+# ------------------------------------------------------------------- ligação
+
+cmd_connect() {
+  local id="${1:-}"
+  [[ -n $id ]] || die "$(t usage_connect)"
+  ensure_store
+  local s
+  s=$(server_json "$id")
+  [[ -n $s ]] || die "$(t not_found "$id")"
+
+  local name host port user auth identity options
+  name=$(jq -r '.name' <<<"$s")
+  host=$(jq -r '.host' <<<"$s")
+  port=$(jq -r '.port' <<<"$s")
+  user=$(jq -r '.user' <<<"$s")
+  auth=$(jq -r '.auth' <<<"$s")
+  identity=$(jq -r '.identity // ""' <<<"$s")
+  options=$(jq -r '.options // ""' <<<"$s")
+
+  ensure_host_key "$host" "$port" || { hold; return 1; }
+
+  local -a cmd=(ssh)
+  if [[ -n $options ]]; then
+    local -a extra
+    read -ra extra <<<"$options"
+    cmd+=("${extra[@]}")
+  fi
+  cmd+=(-p "$port")
+  if [[ -n $identity ]]; then
+    local keyfile="${identity/#\~/$HOME}"
+    if [[ ! -f $keyfile ]]; then
+      err "$(t key_missing "$keyfile")"
+      hold
+      return 1
+    fi
+    # O ssh recusa chaves legíveis por outros. Pastas sincronizadas (Nextcloud,
+    # Dropbox) repõem 0644 com frequência, por isso corrige-se a cada ligação.
+    if [[ $(stat -c '%a' "$keyfile") != 600 ]]; then
+      chmod 600 "$keyfile" && warn "$(t key_perms_fixed "$keyfile")"
+    fi
+    cmd+=(-i "$keyfile")
+  fi
+  cmd+=("$user@$host")
+
+  printf '\033]0;%s\007' "$name"
+  gum style --border rounded --padding "0 2" --margin "1 0" --border-foreground 4 \
+    "$name" "$user@$host:$port"
+
+  if [[ $auth == password ]]; then
+    local pw
+    pw=$(get_password "$id")
+    if [[ -n $pw ]]; then
+      SSHPASS="$pw" sshpass -e "${cmd[@]}"
+      local rc=$?
+      case $rc in
+      0 | 1 | 130) ;;
+      5) err "$(t pass_refused "$host")"; hold ;;
+      *) err "$(t conn_error "$rc")"; hold ;;
+      esac
+      return $rc
+    fi
+    warn "$(t no_stored_pass "$id")"
+  fi
+  "${cmd[@]}"
+  local rc=$?
+  ((rc != 0)) && { err "$(t conn_error "$rc")"; hold; }
+  return $rc
+}
+
+# ------------------------------------------------------------------- cadastro
+
+pick_group() {
+  local -a opts=()
+  mapfile -t opts < <(groups_list)
+  opts+=("$(t group_new_option)")
+  local sel
+  sel=$(printf '%s\n' "${opts[@]}" | gum choose --header "${1:-$(t f_group)}") || return 1
+  if [[ $sel == "$(t group_new_option)" ]]; then
+    sel=$(gum input --header "$(t group_new_name)" --placeholder "$(t ph_group)") || return 1
+    [[ -n $sel ]] || return 1
+  fi
+  printf '%s' "$sel"
+}
+
+# form <id-ou-vazio>
+server_form() {
+  local id="${1:-}" cur='{}'
+  [[ -n $id ]] && cur=$(server_json "$id")
+
+  local d_name d_group d_host d_port d_user d_auth d_identity d_options
+  d_name=$(jq -r '.name // ""' <<<"$cur")
+  d_group=$(jq -r '.group // ""' <<<"$cur")
+  d_host=$(jq -r '.host // ""' <<<"$cur")
+  d_port=$(jq -r '.port // 22' <<<"$cur")
+  d_user=$(jq -r '.user // "root"' <<<"$cur")
+  d_auth=$(jq -r '.auth // "key"' <<<"$cur")
+  d_identity=$(jq -r '.identity // ""' <<<"$cur")
+  d_options=$(jq -r '.options // ""' <<<"$cur")
+
+  local name group host port user auth identity options
+  name=$(gum input --header "$(t f_name)" --value "$d_name" --placeholder "$(t ph_name)") || return 1
+  [[ -n $name ]] || { err "$(t req_name)"; return 1; }
+
+  if [[ -n $d_group ]] && gum confirm "$(t keep_group "$d_group")" --default=yes; then
+    group="$d_group"
+  else
+    group=$(pick_group "$(t f_group)") || return 1
+  fi
+
+  host=$(gum input --header "$(t f_host)" --value "$d_host" --placeholder "10.0.0.1") || return 1
+  [[ -n $host ]] || { err "$(t req_host)"; return 1; }
+
+  port=$(gum input --header "$(t f_port)" --value "$d_port") || return 1
+  port=${port:-22}
+  [[ $port =~ ^[0-9]+$ ]] || { err "$(t bad_port "$port")"; return 1; }
+
+  user=$(gum input --header "$(t f_user)" --value "$d_user") || return 1
+  [[ -n $user ]] || { err "$(t req_user)"; return 1; }
+
+  local auth_label
+  auth_label=$(printf '%s\n%s\n' "$(t auth_key)" "$(t auth_pass)" |
+    gum choose --header "$(t f_auth)" \
+      --selected "$([[ $d_auth == password ]] && t auth_pass || t auth_key)") || return 1
+  [[ $auth_label == "$(t auth_pass)" ]] && auth=password || auth=key
+
+  identity=""
+  if [[ $auth == key ]]; then
+    identity=$(gum input --header "$(t f_identity)" \
+      --value "$d_identity" --placeholder "~/.ssh/id_ed25519") || return 1
+  fi
+
+  options=$(gum input --header "$(t f_options)" --value "$d_options" \
+    --placeholder "-oHostKeyAlgorithms=+ssh-rsa") || return 1
+
+  [[ -n $id ]] || id=$(new_id "$name")
+
+  jq --arg id "$id" --arg name "$name" --arg group "$group" --arg host "$host" \
+    --argjson port "$port" --arg user "$user" --arg auth "$auth" \
+    --arg identity "$identity" --arg options "$options" '
+      .servers = ((.servers // []) | map(select(.id != $id))) + [{
+        id: $id, name: $name, group: $group, host: $host, port: $port,
+        user: $user, auth: $auth, identity: $identity, options: $options
+      }] | .servers |= sort_by(.group, .name)
+    ' "$SERVERS" | save_servers || return 1
+
+  if [[ $auth == password ]]; then
+    local pw
+    pw=$(ask_secret "$(t f_pass_for "$user" "$host")") || return 1
+    [[ -n $pw ]] && { set_password "$id" "$pw" || err "$(t pass_save_fail)"; }
+  fi
+
+  menu_sync
+  ok "$(t saved_as "$name" "$id")"
+}
+
+pick_server_id() {
+  local group="${1:-}" header="${2:-Servidor:}"
+  local -a rows=() labels=() ids=()
+  mapfile -t rows < <(jq -r --arg g "$group" '
+    .servers | sort_by(.group, .name) | .[] | select($g == "" or .group == $g) |
+    [.id, .name, (.user + "@" + .host + ":" + (.port|tostring)), .group, .auth] | @tsv' "$SERVERS")
+  ((${#rows[@]})) || { warn "$(t no_servers)"; return 1; }
+
+  local r id name addr grp auth mark
+  for r in "${rows[@]}"; do
+    IFS=$'\t' read -r id name addr grp auth <<<"$r"
+    [[ $auth == password ]] && mark="" || mark=""
+    if [[ -n $group ]]; then
+      labels+=("$(printf '%s  %-26s %s' "$mark" "$name" "$addr")")
+    else
+      labels+=("$(printf '%s  %-12s %-26s %s' "$mark" "$grp" "$name" "$addr")")
+    fi
+    ids+=("$id")
+  done
+
+  local sel
+  sel=$(printf '%s\n' "${labels[@]}" | gum filter --header "$header" --placeholder "$(t filter_ph)" --height 18) || return 1
+  local i
+  for i in "${!labels[@]}"; do
+    [[ ${labels[$i]} == "$sel" ]] && { printf '%s' "${ids[$i]}"; return 0; }
+  done
+  return 1
+}
+
+remove_server() {
+  local id
+  id=$(pick_server_id "" "$(t which_remove)") || return 1
+  local name
+  name=$(server_json "$id" | jq -r '.name')
+  gum confirm "$(t confirm_remove "$name")" --default=no || return 0
+  jq --arg id "$id" '.servers |= map(select(.id != $id))' "$SERVERS" | save_servers || return 1
+  [[ -f $SECRETS ]] && del_password "$id" >/dev/null 2>&1
+  menu_sync
+  ok "$(t removed "$name")"
+}
+
+set_server_password() {
+  local id
+  id=$(pick_server_id "" "$(t which_pass)") || return 1
+  local pw
+  pw=$(ask_secret "$(t new_pass)") || return 1
+  [[ -n $pw ]] || { err "$(t empty_pass)"; return 1; }
+  set_password "$id" "$pw" || return 1
+  jq --arg id "$id" '.servers |= map(if .id == $id then .auth = "password" else . end)' "$SERVERS" | save_servers
+  menu_sync
+  ok "$(t pass_saved)"
+}
+
+rename_group() {
+  local old new
+  old=$(groups_list | gum choose --header "$(t which_group_rename)") || return 1
+  new=$(gum input --header "$(t new_name)" --value "$old") || return 1
+  [[ -n $new ]] || return 1
+  jq --arg o "$old" --arg n "$new" '.servers |= map(if .group == $o then .group = $n else . end)' "$SERVERS" | save_servers || return 1
+  menu_sync
+  ok "$(t group_renamed "$new")"
+}
+
+move_server_group() {
+  local id group
+  id=$(pick_server_id "" "$(t which_move)") || return 1
+  group=$(pick_group "$(t new_group)") || return 1
+  jq --arg id "$id" --arg g "$group" '.servers |= map(if .id == $id then .group = $g else . end) | .servers |= sort_by(.group, .name)' "$SERVERS" | save_servers || return 1
+  menu_sync
+  ok "$(t moved_to "$group")"
+}
+
+# -------------------------------------------------------------- menu Omarchy
+
+menu_block() {
+  # O menu do Omarchy congela a altura maxima na primeira lista aberta, por
+  # isso a rota "upssh" lista todos os servidores (card alto e pesquisavel) e os
+  # grupos ficam em "upssh.grupos", ja a herdar essa altura.
+  printf '%s\n' "$BEGIN_MARK"
+  printf '  "upssh": {"icon":"\\uf233","label":"upSSH","aliases":["ssh","servidores","acessos","remoto"],"description":"%s"},\n' "$(t menu_root_desc)"
+
+  jq -r '
+    .servers | sort_by(.group, .name) | .[] |
+    "  \"upssh." + .id + "\": " + ({
+      icon: "\uf233",
+      label: .name,
+      description: (.group + " · " + .user + "@" + .host + ":" + (.port|tostring)),
+      aliases: [.group, .host],
+      action: ("omarchy-launch-tui --app-id=org.upssh upssh connect " + .id)
+    } | tojson) + ","' "$SERVERS"
+
+  printf '  "upssh.grupos": {"icon":"\\uf0c0","label":"%s","description":"%s"},\n' "$(t menu_bygroup)" "$(t menu_bygroup_desc)"
+  local group slug
+  while IFS= read -r group; do
+    [[ -n $group ]] || continue
+    slug=$(slugify "$group")
+    printf '  "upssh.grupos.%s": {"icon":"\\uf0c0","label":%s},\n' "$slug" "$(jq -Rn --arg v "$group" '$v')"
+    jq -r --arg g "$group" --arg slug "$slug" '
+      .servers | sort_by(.name) | .[] | select(.group == $g) |
+      "  \"upssh.grupos." + $slug + "." + .id + "\": " + ({
+        icon: "\uf233",
+        label: .name,
+        description: (.user + "@" + .host + ":" + (.port|tostring)),
+        action: ("omarchy-launch-tui --app-id=org.upssh upssh connect " + .id)
+      } | tojson) + ","' "$SERVERS"
+  done < <(groups_list)
+
+  printf '  "upssh.gerir": {"icon":"\\uf013","label":"%s","description":"%s","action":"omarchy-launch-tui --app-id=org.upssh upssh"},\n' "$(t menu_manage)" "$(t menu_manage_desc)"
+  printf '%s\n' "$END_MARK"
+}
+
+menu_sync() {
+  ensure_store
+  mkdir -p "$(dirname "$MENU_FILE")"
+  [[ -f $MENU_FILE ]] || printf '{\n}\n' >"$MENU_FILE"
+  local block tmp
+  block=$(menu_block)
+  tmp=$(mktemp) || return 1
+  BLOCK="$block" BEGIN_MARK="$BEGIN_MARK" END_MARK="$END_MARK" \
+    python3 - "$MENU_FILE" >"$tmp" <<'PYEOF'
+import os, sys
+
+path = sys.argv[1]
+begin, end = os.environ["BEGIN_MARK"], os.environ["END_MARK"]
+block = os.environ["BLOCK"].rstrip("\n").split("\n")
+
+lines = open(path, encoding="utf-8").read().split("\n")
+
+out, skip = [], False
+for line in lines:
+    if line.rstrip() == begin.rstrip():
+        skip = True
+        continue
+    if line.rstrip() == end.rstrip():
+        skip = False
+        continue
+    if not skip:
+        out.append(line)
+
+# Drop trailing blank lines, then insert before the final closing brace.
+while out and out[-1].strip() == "":
+    out.pop()
+if not out or out[-1].strip() != "}":
+    out = ["{", "}"] if not out else out + ["}"]
+    if out[0].strip() != "{":
+        out.insert(0, "{")
+
+out = out[:-1] + block + ["}", ""]
+sys.stdout.write("\n".join(out))
+PYEOF
+  if [[ -s $tmp ]]; then
+    cp -p "$MENU_FILE" "$MENU_FILE.bak" 2>/dev/null
+    mv "$tmp" "$MENU_FILE"
+  else
+    rm -f "$tmp"
+    err "$(t menu_sync_fail)"
+    return 1
+  fi
+}
+
+# --------------------------------------------- API nao-interativa (painel QML)
+
+# save --id <id|vazio> --name .. --group .. --host .. --port .. --user ..
+#      --auth key|password --identity .. --options ..
+# Imprime o id resultante.
+api_save() {
+  local id="" name="" group="" host="" port="22" user="root" auth="key" identity="" options=""
+  while (($#)); do
+    case "$1" in
+    --id) id="$2"; shift 2 ;;
+    --name) name="$2"; shift 2 ;;
+    --group) group="$2"; shift 2 ;;
+    --host) host="$2"; shift 2 ;;
+    --port) port="$2"; shift 2 ;;
+    --user) user="$2"; shift 2 ;;
+    --auth) auth="$2"; shift 2 ;;
+    --identity) identity="$2"; shift 2 ;;
+    --options) options="$2"; shift 2 ;;
+    *) printf 'Argumento desconhecido: %s\n' "$1" >&2; return 2 ;;
+    esac
+  done
+
+  [[ -n $name ]] || { printf 'O nome é obrigatório.\n' >&2; return 2; }
+  [[ -n $host ]] || { printf 'O host é obrigatório.\n' >&2; return 2; }
+  [[ -n $user ]] || { printf 'O utilizador é obrigatório.\n' >&2; return 2; }
+  [[ -n $group ]] || group="Geral"
+  port=${port:-22}
+  [[ $port =~ ^[0-9]+$ ]] || { printf 'Porta inválida: %s\n' "$port" >&2; return 2; }
+  [[ $auth == password ]] || auth=key
+  [[ $auth == key ]] || identity=""
+
+  [[ -n $id ]] || id=$(new_id "$name")
+
+  jq --arg id "$id" --arg name "$name" --arg group "$group" --arg host "$host" \
+    --argjson port "$port" --arg user "$user" --arg auth "$auth" \
+    --arg identity "$identity" --arg options "$options" '
+      .servers = ((.servers // []) | map(select(.id != $id))) + [{
+        id: $id, name: $name, group: $group, host: $host, port: $port,
+        user: $user, auth: $auth, identity: $identity, options: $options
+      }] | .servers |= sort_by(.group, .name)
+    ' "$SERVERS" | save_servers || return 1
+
+  menu_sync >/dev/null 2>&1
+  printf '%s\n' "$id"
+}
+
+api_delete() {
+  local id="${1:-}"
+  [[ -n $id ]] || { printf 'Uso: upssh delete <id>\n' >&2; return 2; }
+  server_exists "$id" || { printf 'Servidor não encontrado: %s\n' "$id" >&2; return 1; }
+  jq --arg id "$id" '.servers |= map(select(.id != $id))' "$SERVERS" | save_servers || return 1
+  [[ -f $SECRETS ]] && del_password "$id" >/dev/null 2>&1
+  menu_sync >/dev/null 2>&1
+}
+
+# Lê a senha da primeira linha do stdin, para o painel não a passar por argv.
+api_set_password() {
+  local id="${1:-}" pw
+  [[ -n $id ]] || { printf 'Uso: upssh set-password <id>\n' >&2; return 2; }
+  IFS= read -r pw || true
+  [[ -n $pw ]] || { printf 'Senha vazia.\n' >&2; return 2; }
+  set_password "$id" "$pw" || return 1
+  jq --arg id "$id" '.servers |= map(if .id == $id then .auth = "password" else . end)' "$SERVERS" | save_servers
+  menu_sync >/dev/null 2>&1
+}
+
+api_group_rename() {
+  local old="${1:-}" new="${2:-}"
+  [[ -n $old && -n $new ]] || { printf 'Uso: upssh group-rename <antigo> <novo>\n' >&2; return 2; }
+  jq --arg o "$old" --arg n "$new" '.servers |= map(if .group == $o then .group = $n else . end) | .servers |= sort_by(.group, .name)' "$SERVERS" | save_servers || return 1
+  menu_sync >/dev/null 2>&1
+}
+
+# Diz quais os ids que ja tem senha guardada, sem revelar as senhas.
+# Requer a senha mestra (pinentry quando nao ha terminal).
+api_has_password() {
+  [[ -f $SECRETS ]] || { printf '[]\n'; return 0; }
+  unlock >/dev/null 2>&1 || { printf '[]\n'; return 0; }
+  secrets_read | jq -c 'keys'
+}
+
+# ------------------------------------------------------- exportar / importar
+
+EXPORT_MAGIC="upssh-export"
+
+# Com --stdin-pass a senha do ficheiro chega pela primeira linha do stdin, em
+# vez de um pinentry: é como o painel gráfico a entrega, sem passar por argv.
+STDIN_PASS=false
+
+# export [--com-senhas] [ficheiro]
+# Sem senhas produz JSON legível; com senhas produz um .gpg simétrico cifrado
+# com uma senha escolhida na exportação — deliberadamente separada da senha
+# mestra, para o ficheiro poder viajar sem levar a chave do cofre consigo.
+cmd_export() {
+  local with_secrets=false dest=""
+  while (($#)); do
+    case "$1" in
+    --com-senhas | --with-passwords) with_secrets=true; shift ;;
+    --stdin-pass) STDIN_PASS=true; shift ;;
+    -*) printf 'Opção desconhecida: %s\n' "$1" >&2; return 2 ;;
+    *) dest="$1"; shift ;;
+    esac
+  done
+
+  local stamp payload
+  stamp=$(date +%Y%m%d-%H%M)
+
+  # Um diálogo de gravação pode devolver só a pasta; nesse caso inventa-se o
+  # nome em vez de falhar com "é um directório".
+  local ext
+  [[ $with_secrets == true ]] && ext="gpg" || ext="json"
+  if [[ -n $dest && -d $dest ]]; then
+    dest="${dest%/}/upssh-$stamp.$ext"
+  elif [[ -n $dest && $dest != *.$ext && $dest != *.json && $dest != *.gpg ]]; then
+    dest="$dest.$ext"
+  fi
+  payload=$(jq --arg m "$EXPORT_MAGIC" --arg at "$(date -Is)" \
+    '{magic: $m, version: 1, exportedAt: $at, servers: .servers}' "$SERVERS") || return 1
+
+  if [[ $with_secrets == true ]]; then
+    [[ -f $SECRETS ]] || { err "$(t vault_none)"; return 1; }
+    local vault
+    vault=$(secrets_read) || { err "$(t vault_open_fail)"; return 1; }
+    # Só viajam as senhas dos servidores que vão no ficheiro.
+    payload=$(jq -n --argjson p "$payload" --argjson v "$vault" \
+      '$p + {secrets: ($v | with_entries(select(.key as $k | $p.servers | map(.id) | index($k))))}') || return 1
+
+    local a b
+    if [[ $STDIN_PASS == true ]]; then
+      IFS= read -r a || true
+      b="$a"
+    else
+      a=$(ask_secret "$(t export_pass)") || return 1
+      b=$(ask_secret "$(t export_pass_confirm)") || return 1
+    fi
+    [[ -n $a && $a == "$b" ]] || { err "$(t pass_mismatch)"; return 1; }
+
+    [[ -n $dest ]] || dest="$HOME/upssh-$stamp.gpg"
+    local tmp
+    tmp=$(mktemp) || return 1
+    if printf '%s' "$payload" | gpg --quiet --batch --yes --pinentry-mode loopback \
+      --passphrase-fd 3 --symmetric --cipher-algo AES256 --output "$tmp" 3<<<"$a"; then
+      chmod 600 "$tmp"
+      mv "$tmp" "$dest"
+    else
+      rm -f "$tmp"
+      err "$(t export_encrypt_fail)"
+      return 1
+    fi
+    ok "$(t exported_secrets "$dest")"
+  else
+    [[ -n $dest ]] || dest="$HOME/upssh-$stamp.json"
+    printf '%s\n' "$payload" >"$dest" || return 1
+    chmod 600 "$dest"
+    ok "$(t exported_plain "$dest")"
+  fi
+  printf '%s\n' "$dest"
+}
+
+# Lê o ficheiro, decifrando se for .gpg. Ecoa o JSON.
+read_export_file() {
+  local file="$1"
+  if [[ $(head -c 2 "$file" | xxd -p 2>/dev/null) == "8503" ]] || [[ $file == *.gpg ]]; then
+    local pass
+    if [[ $STDIN_PASS == true ]]; then
+      IFS= read -r pass || true
+    else
+      pass=$(ask_secret "$(t import_pass)") || return 1
+    fi
+    gpg --quiet --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
+      --decrypt "$file" 3<<<"$pass" 2>/dev/null || {
+      err "$(t decrypt_fail)"
+      return 1
+    }
+  else
+    cat "$file"
+  fi
+}
+
+# import <ficheiro> [--conflito substituir|manter|copiar|perguntar]
+cmd_import() {
+  local file="" policy="perguntar"
+  while (($#)); do
+    case "$1" in
+    --conflito | --on-conflict) policy="$2"; shift 2 ;;
+    --stdin-pass) STDIN_PASS=true; shift ;;
+    -*) printf 'Opção desconhecida: %s\n' "$1" >&2; return 2 ;;
+    *) file="$1"; shift ;;
+    esac
+  done
+  [[ -n $file ]] || { printf 'Uso: upssh import <ficheiro>\n' >&2; return 2; }
+  [[ -d $file ]] && { err "$(t is_a_dir "$file")"; return 1; }
+  [[ -f $file ]] || { err "$(t file_missing "$file")"; return 1; }
+
+  local data
+  data=$(read_export_file "$file") || return 1
+  jq -e --arg m "$EXPORT_MAGIC" '.magic == $m and (.servers | type == "array")' <<<"$data" >/dev/null 2>&1 ||
+    { err "$(t not_an_export)"; return 1; }
+
+  local total added replaced kept copied
+  total=$(jq '.servers | length' <<<"$data")
+  added=0 replaced=0 kept=0 copied=0
+
+  local pending_secrets="{}"
+  local i count
+  count=$total
+  for ((i = 0; i < count; i++)); do
+    local srv id name
+    srv=$(jq -c --argjson i "$i" '.servers[$i]' <<<"$data")
+    id=$(jq -r '.id' <<<"$srv")
+    name=$(jq -r '.name' <<<"$srv")
+
+    local action="adicionar"
+    if server_exists "$id"; then
+      case "$policy" in
+      substituir) action=substituir ;;
+      manter) action=manter ;;
+      copiar) action=copiar ;;
+      *)
+        local cur choice
+        cur=$(server_json "$id")
+        warn "$(t conflict_on "$name" "$id")"
+        printf "$(t conflict_current)" "$(jq -r '.user + "@" + .host + ":" + (.port|tostring) + "  [" + .group + "]"' <<<"$cur")"
+        printf "$(t conflict_incoming)" "$(jq -r '.user + "@" + .host + ":" + (.port|tostring) + "  [" + .group + "]"' <<<"$srv")"
+        choice=$(printf '%s\n' \
+          "Substituir pelo importado" \
+          "Manter o actual" \
+          "Importar como cópia" \
+          "Substituir — e todos os seguintes" \
+          "Manter — e todos os seguintes" \
+          "Importar como cópia — e todos os seguintes" |
+          gum choose --header "O que fazer?" --height 8) || return 1
+        case "$choice" in
+        "Substituir pelo importado") action=substituir ;;
+        "Manter o actual") action=manter ;;
+        "Importar como cópia") action=copiar ;;
+        "Substituir — e todos"*) action=substituir; policy=substituir ;;
+        "Manter — e todos"*) action=manter; policy=manter ;;
+        "Importar como cópia — e todos"*) action=copiar; policy=copiar ;;
+        esac
+        ;;
+      esac
+    fi
+
+    case "$action" in
+    manter) ((kept++)); continue ;;
+    copiar)
+      local newid
+      newid=$(new_id "$name")
+      srv=$(jq -c --arg n "$newid" '.id = $n' <<<"$srv")
+      id="$newid"
+      ((copied++))
+      ;;
+    substituir) ((replaced++)) ;;
+    adicionar) ((added++)) ;;
+    esac
+
+    jq --argjson srv "$srv" '.servers = ((.servers // []) | map(select(.id != $srv.id))) + [$srv] | .servers |= sort_by(.group, .name)' \
+      "$SERVERS" | save_servers || return 1
+
+    # A senha segue o id final, que pode ter mudado em "copiar".
+    local origid pw
+    origid=$(jq -r --argjson i "$i" '.servers[$i].id' <<<"$data")
+    pw=$(jq -r --arg k "$origid" '.secrets[$k] // empty' <<<"$data")
+    [[ -n $pw ]] && pending_secrets=$(jq --arg k "$id" --arg v "$pw" '.[$k] = $v' <<<"$pending_secrets")
+  done
+
+  if [[ $(jq 'length' <<<"$pending_secrets") -gt 0 ]]; then
+    unlock || { err "$(t import_no_pass)"; return 1; }
+    local cur
+    cur=$(secrets_read) || return 1
+    jq -s '.[0] * .[1]' <(printf '%s' "$cur") <(printf '%s' "$pending_secrets") | secrets_write ||
+      { err "$(t import_pass_fail)"; return 1; }
+  fi
+
+  menu_sync >/dev/null 2>&1
+  ok "$(t import_summary "$total" "$added" "$replaced" "$copied" "$kept")"
+}
+
+# ------------------------------------------------------------------------ TUI
+
+tui_export() {
+  local with=""
+  if gum confirm "$(t export_with_pass)" --default=no; then
+    with="--com-senhas"
+  fi
+  cmd_export $with >/dev/null
+  gum input --placeholder "$(t enter_back)" >/dev/null
+}
+
+tui_import() {
+  local file
+  file=$(gum file "$HOME" --height 15) || return 0
+  [[ -n $file ]] || return 0
+  cmd_import "$file"
+  gum input --placeholder "$(t enter_back)" >/dev/null
+}
+
+choose_lang() {
+  local sel
+  sel=$(printf 'Português\nEnglish\n' | gum choose --header "$(t m_lang)") || return 0
+  case "$sel" in
+  Português) set_lang pt ;;
+  English) set_lang en ;;
+  esac
+  ok "$(t lang_set)"
+}
+
+# As entradas são escolhidas por índice, não pelo texto: assim o menu continua
+# a funcionar em qualquer idioma sem casos especiais por tradução.
+manage_menu() {
+  local -a keys=(m_add m_edit m_remove m_pass m_move m_rename m_listall
+                 m_export m_import m_sync m_master m_lang m_back)
+  local -a icons=($'\uf067' $'\uf044' $'\uf1f8' $'\uf084' $'\uf0b2' $'\uf02b'
+                  $'\uf03a' $'\uf019' $'\uf093' $'\uf021' $'\uf023' $'\uf0ac' $'\uf060')
+  while :; do
+    local -a labels=()
+    local i sel idx=-1
+    for i in "${!keys[@]}"; do labels+=("${icons[$i]:- }  $(t "${keys[$i]}")"); done
+    sel=$(printf '%s\n' "${labels[@]}" | gum choose --header "$(t m_manage)" --height 13) || return 0
+    for i in "${!labels[@]}"; do [[ ${labels[$i]} == "$sel" ]] && idx=$i; done
+    ((idx >= 0)) || continue
+    case "${keys[$idx]}" in
+    m_add) server_form "" ;;
+    m_edit)
+      local id
+      id=$(pick_server_id "" "$(t which_edit)") && server_form "$id"
+      ;;
+    m_remove) remove_server ;;
+    m_pass) set_server_password ;;
+    m_move) move_server_group ;;
+    m_rename) rename_group ;;
+    m_listall)
+      cmd_list
+      gum input --placeholder "$(t enter_back)" >/dev/null
+      ;;
+    m_export) tui_export ;;
+    m_import) tui_import ;;
+    m_sync) menu_sync && ok "$(t menu_synced)" ;;
+    m_master) change_master ;;
+    m_lang) choose_lang ;;
+    m_back) return 0 ;;
+    esac
+  done
+}
+
+tui() {
+  ensure_store
+  if [[ -f $PENDING ]]; then
+    warn "$(t pending_wait)"
+    if gum confirm "$(t pending_ask)" --default=yes; then
+      vault_init || true
+    fi
+  fi
+  while :; do
+    local -a opts=()
+    mapfile -t opts < <(groups_list)
+    if ((${#opts[@]} == 0)); then
+      warn "$(t no_servers_yet)"
+      manage_menu
+      continue
+    fi
+    local ngroups=${#opts[@]}
+    opts+=("  $(t m_all)" "  $(t m_manage_short)" "  $(t m_quit)")
+    local sel idx=-1 i
+    sel=$(printf '%s\n' "${opts[@]}" | gum choose --header "$(t pick_group)" --height 14) || break
+    for i in "${!opts[@]}"; do [[ ${opts[$i]} == "$sel" ]] && idx=$i; done
+    if ((idx == ngroups + 2)); then
+      break
+    elif ((idx == ngroups + 1)); then
+      manage_menu
+    elif ((idx == ngroups)); then
+      local id
+      id=$(pick_server_id "" "$(t pick_server_all)") && cmd_connect "$id"
+    else
+      local id
+      id=$(pick_server_id "$sel" "$(t pick_server_group "$sel")") && cmd_connect "$id"
+    fi
+  done
+}
+
+# ---------------------------------------------------------------------- entry
+
+require jq gum ssh
+ensure_store
+
+case "${1:-}" in
+connect)
+  shift
+  cmd_connect "$@"
+  ;;
+add) server_form "" ;;
+edit)
+  shift
+  id="${1:-}"
+  [[ -n $id ]] || id=$(pick_server_id "" "$(t which_edit)") || exit 1
+  server_form "$id"
+  ;;
+remove | rm) remove_server ;;
+list | ls) cmd_list ;;
+passwd) set_server_password ;;
+groups) groups_list ;;
+menu-sync) menu_sync && printf "%s\n" "$(t menu_synced)" ;;
+json) cat "$SERVERS" ;;
+save)
+  shift
+  api_save "$@"
+  ;;
+delete)
+  shift
+  api_delete "$@"
+  ;;
+set-password)
+  shift
+  api_set_password "$@"
+  ;;
+group-rename)
+  shift
+  api_group_rename "$@"
+  ;;
+has-password) api_has_password ;;
+lang)
+  shift
+  if [[ -n ${1:-} ]]; then set_lang "$1"; else printf '%s\n' "$UPSSH_LANG"; fi
+  ;;
+export)
+  shift
+  cmd_export "$@"
+  ;;
+import)
+  shift
+  cmd_import "$@"
+  ;;
+vault-init) vault_init ;;
+master) change_master ;;
+-h | --help | help)
+  if [[ $UPSSH_LANG == pt ]]; then
+    cat <<'USAGE_PT'
+upSSH — gestor de acessos SSH para o Omarchy
+
+  upssh                       Abre a TUI (grupo → servidor → liga)
+  upssh connect <id>          Liga directamente a um servidor
+  upssh add                   Cadastra um servidor
+  upssh edit [id]             Edita um servidor
+  upssh remove                Remove um servidor
+  upssh list                  Lista todos os servidores
+  upssh passwd                Define/altera a senha de um servidor
+  upssh groups                Lista os grupos
+  upssh export [--com-senhas] [ficheiro]
+                              Exporta os servidores (JSON), ou um .gpg cifrado
+  upssh import <ficheiro> [--conflito substituir|manter|copiar]
+                              Importa servidores de uma exportação
+  upssh lang [pt|en]          Mostra ou altera o idioma
+  upssh menu-sync             Regenera as entradas no menu do Omarchy
+  upssh vault-init            Cria o cofre e importa senhas pendentes
+  upssh master                Altera a senha mestra do cofre
+
+Ficheiros:
+  ~/.config/upssh/servers.json   servidores (sem senhas)
+  ~/.config/upssh/secrets.gpg    senhas (GPG AES-256, senha mestra)
+  ~/.config/upssh/config.json    preferências (idioma)
+USAGE_PT
+  else
+    cat <<'USAGE_EN'
+upSSH — SSH access manager for Omarchy
+
+  upssh                       Open the TUI (group → server → connect)
+  upssh connect <id>          Connect straight to a server
+  upssh add                   Register a server
+  upssh edit [id]             Edit a server
+  upssh remove                Remove a server
+  upssh list                  List every server
+  upssh passwd                Set or change a server password
+  upssh groups                List the groups
+  upssh export [--with-passwords] [file]
+                              Export the servers (JSON), or an encrypted .gpg
+  upssh import <file> [--on-conflict substituir|manter|copiar]
+                              Import servers from an export
+  upssh lang [pt|en]          Show or change the language
+  upssh menu-sync             Regenerate the Omarchy menu entries
+  upssh vault-init            Create the vault and import pending passwords
+  upssh master                Change the vault master password
+
+Files:
+  ~/.config/upssh/servers.json   servers (no passwords)
+  ~/.config/upssh/secrets.gpg    passwords (GPG AES-256, master password)
+  ~/.config/upssh/config.json    preferences (language)
+USAGE_EN
+  fi
+  ;;
+"") tui ;;
+*) die "$(t unknown_cmd "$1")" ;;
+esac

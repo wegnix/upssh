@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "_comment": "Fictional servers used for the README screenshots. Point upSSH at them with: UPSSH_DIR=/tmp/upssh-demo upssh list",
+  "servers": [
+    {"id":"web-01","name":"Web 01","group":"Production","host":"web01.example.com","port":22,"user":"deploy","auth":"key","identity":"","options":""},
+    {"id":"web-02","name":"Web 02","group":"Production","host":"web02.example.com","port":22,"user":"deploy","auth":"key","identity":"","options":""},
+    {"id":"db-primary","name":"DB Primary","group":"Production","host":"db01.example.com","port":2222,"user":"postgres","auth":"password","identity":"","options":""},
+    {"id":"edge-router","name":"Edge Router","group":"Production","host":"10.0.0.1","port":1822,"user":"admin","auth":"password","identity":"","options":"-oHostKeyAlgorithms=+ssh-rsa"},
+    {"id":"staging-app","name":"Staging App","group":"Staging","host":"staging.example.com","port":22,"user":"deploy","auth":"key","identity":"","options":""},
+    {"id":"staging-db","name":"Staging DB","group":"Staging","host":"10.20.0.15","port":22,"user":"postgres","auth":"password","identity":"","options":""},
+    {"id":"builder","name":"Build Runner","group":"Staging","host":"10.20.0.42","port":22,"user":"ci","auth":"key","identity":"~/.ssh/id_ed25519","options":""},
+    {"id":"nas","name":"NAS","group":"Home","host":"nas.local","port":22,"user":"wes","auth":"key","identity":"","options":""},
+    {"id":"pi","name":"Raspberry Pi","group":"Home","host":"192.168.1.50","port":22,"user":"pi","auth":"password","identity":"","options":""}
+  ]
+}
