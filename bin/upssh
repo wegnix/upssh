@@ -10,6 +10,10 @@
 
 set -uo pipefail
 
+# Tudo o que este script cria (config, cofre, exportações, temporários) é só
+# do utilizador desde o primeiro byte, sem janela entre criar e fazer chmod.
+umask 077
+
 # Caminho absoluto deste script. As entradas geradas no menu do Omarchy
 # apontam para aqui, e não para "upssh", porque quem instala com
 # `omarchy plugin add` fica com o comando dentro da pasta do plugin e não no
@@ -56,8 +60,9 @@ UPSSH_LANG=$(detect_lang)
 
 set_lang() {
   local l="${1:-}"
-  [[ $l == pt || $l == en ]] || { printf 'Idioma inválido: %s (usa pt ou en)\n' "$l" >&2; return 2; }
+  [[ $l == pt || $l == en ]] || { printf '%s\n' "$(t bad_lang "$l")" >&2; return 2; }
   mkdir -p "$CONFIG_DIR"
+  store_lock || return 1
   local tmp
   tmp=$(mktemp "$CONFIG_DIR/.cfg.XXXXXX") || return 1
   if [[ -f $CONFIG_FILE ]]; then
@@ -200,6 +205,8 @@ MSG_pt[moved_to]="Movido para '%s'."
 MSG_en[moved_to]="Moved to '%s'."
 MSG_pt[menu_sync_fail]="Falha ao sincronizar o menu do Omarchy."
 MSG_en[menu_sync_fail]="Could not sync the Omarchy menu."
+MSG_pt[menu_markers_broken]="O bloco do upSSH em %s está incompleto (falta um marcador '// >>> upssh' ou '// <<< upssh'). O ficheiro não foi alterado; corrija ou apague esse bloco e sincronize de novo."
+MSG_en[menu_markers_broken]="The upSSH block in %s is incomplete (a '// >>> upssh' or '// <<< upssh' marker is missing). The file was left unchanged; fix or delete that block and sync again."
 MSG_pt[menu_synced]="Menu sincronizado."
 MSG_en[menu_synced]="Menu synced."
 MSG_pt[vault_none]="Não há cofre para exportar senhas."
@@ -252,6 +259,62 @@ MSG_pt[import_pass_fail]="Falha ao gravar as senhas importadas."
 MSG_en[import_pass_fail]="Could not store the imported passwords."
 MSG_pt[import_summary]="Importados %s: %s novos, %s substituídos, %s cópias, %s ignorados."
 MSG_en[import_summary]="Imported %s: %s new, %s replaced, %s copies, %s skipped."
+MSG_pt[import_invalid]="Ignorado um servidor inválido no ficheiro (#%s: %s)."
+MSG_en[import_invalid]="Skipped an invalid server in the file (#%s: %s)."
+MSG_pt[import_opts_dropped]="Opções ssh descartadas em '%s' (só se aceitam opções seguras vindas de um ficheiro): %s"
+MSG_en[import_opts_dropped]="Dropped ssh options on '%s' (only safe options are accepted from a file): %s"
+MSG_pt[import_too_big]="Ficheiro grande demais para uma exportação do upSSH: %s"
+MSG_en[import_too_big]="File too large for an upSSH export: %s"
+MSG_pt[import_need_vault]="O ficheiro traz senhas: é preciso abrir o cofre. Nada foi importado."
+MSG_en[import_need_vault]="The file carries passwords: the vault must be unlocked. Nothing was imported."
+MSG_pt[import_pass_dropped]="A senha guardada de '%s' foi descartada porque o destino mudou."
+MSG_en[import_pass_dropped]="The stored password of '%s' was dropped because its destination changed."
+MSG_pt[export_exists]="Já existe um ficheiro em %s — nada foi escrito (use --overwrite para substituir)."
+MSG_en[export_exists]="A file already exists at %s — nothing was written (use --overwrite to replace it)."
+MSG_pt[export_write_fail]="Não consegui escrever a exportação em %s."
+MSG_en[export_write_fail]="Could not write the export to %s."
+MSG_pt[bad_field]="Valor inválido em %s: %s"
+MSG_en[bad_field]="Invalid value for %s: %s"
+MSG_pt[bad_id]="Id inválido: %s (só minúsculas, dígitos e '-')"
+MSG_en[bad_id]="Invalid id: %s (lowercase letters, digits and '-' only)"
+MSG_pt[req_field]="Falta o campo obrigatório: %s"
+MSG_en[req_field]="Missing required field: %s"
+MSG_pt[unknown_arg]="Argumento desconhecido: %s"
+MSG_en[unknown_arg]="Unknown argument: %s"
+MSG_pt[usage]="Uso: %s"
+MSG_en[usage]="Usage: %s"
+MSG_pt[empty_pass_api]="Senha vazia."
+MSG_en[empty_pass_api]="Empty password."
+MSG_pt[delete_pass_fail]="O servidor foi removido, mas a senha dele continua no cofre (cofre não aberto). Será apagada na próxima vez que o cofre for aberto para escrita."
+MSG_en[delete_pass_fail]="The server was removed, but its password is still in the vault (vault not unlocked). It will be purged the next time the vault is opened for writing."
+MSG_pt[store_busy]="Outra operação do upSSH está em curso; tente de novo."
+MSG_en[store_busy]="Another upSSH operation is in progress; try again."
+MSG_pt[store_too_big]="O ficheiro %s é grande demais (> 1 MiB); recuso-me a lê-lo."
+MSG_en[store_too_big]="%s is too large (> 1 MiB); refusing to read it."
+MSG_pt[vault_bad_data]="Os dados a gravar no cofre são inválidos — o cofre ficou como estava."
+MSG_en[vault_bad_data]="The data to write to the vault is invalid — the vault was left unchanged."
+MSG_pt[menu_file_invalid]="Não consegui interpretar %s como JSONC (um objecto na raiz). O ficheiro não foi alterado."
+MSG_en[menu_file_invalid]="Could not parse %s as JSONC (an object at the root). The file was left unchanged."
+MSG_pt[hostkey_unknown]="A chave de %s:%s não está em known_hosts e não pôde ser confirmada; ligue uma vez com 'ssh' para a aceitar."
+MSG_en[hostkey_unknown]="The host key of %s:%s is not in known_hosts and could not be confirmed; connect once with plain 'ssh' to accept it."
+MSG_pt[pin_label]="Senha:"
+MSG_en[pin_label]="Password:"
+MSG_pt[missing_value]="Falta o valor de %s."
+MSG_en[missing_value]="Missing value for %s."
+MSG_pt[hostkey_unverified]="Não consegui obter a chave de %s:%s; o ssh vai tratar da verificação."
+MSG_en[hostkey_unverified]="Could not fetch the host key of %s:%s; ssh will handle the check itself."
+MSG_pt[menu_link_broken]="%s é um link para um ficheiro que não existe; não o sigo. Nada foi alterado."
+MSG_en[menu_link_broken]="%s is a link to a file that does not exist; not following it. Nothing was changed."
+MSG_pt[key_perms_skip]="A chave %s tem permissões %s e está fora de ~/.ssh; não lhe mexo — o ssh pode recusá-la."
+MSG_en[key_perms_skip]="Key %s has mode %s and lives outside ~/.ssh; leaving it alone — ssh may refuse it."
+MSG_pt[no_tty_pinentry]="Sem terminal e sem pinentry disponível."
+MSG_en[no_tty_pinentry]="No terminal and no pinentry available."
+MSG_pt[press_enter]="Enter para fechar..."
+MSG_en[press_enter]="Press Enter to close..."
+MSG_pt[link_foreign]="%s já existe e não foi criado pelo upSSH — nada foi alterado. Use outro nome:  upssh link --name <nome>"
+MSG_en[link_foreign]="%s already exists and was not created by upSSH — nothing was changed. Pick another name:  upssh link --name <name>"
+MSG_pt[bad_lang]="Idioma inválido: %s (use pt ou en)"
+MSG_en[bad_lang]="Invalid language: %s (use pt or en)"
 MSG_pt[export_with_pass]="Incluir as senhas guardadas (ficheiro cifrado)?"
 MSG_en[export_with_pass]="Include the stored passwords (encrypted file)?"
 MSG_pt[enter_back]="Enter para voltar"
@@ -371,7 +434,7 @@ upssh_owns() {
 }
 
 # Mantém a janela aberta quando algo corre mal, para a mensagem ser legível.
-hold() { has_tty && read -n1 -rs -p "Enter para fechar..." && echo; }
+hold() { has_tty && read -n1 -rs -p "$(t press_enter)" && echo; }
 
 ok() { has_tty && gum style --foreground 2 "$*" || printf '%s\n' "$*"; }
 
@@ -379,15 +442,17 @@ ok() { has_tty && gum style --foreground 2 "$*" || printf '%s\n' "$*"; }
 # no Claude Code, hook) cai no pinentry gráfico, que abre a sua própria janela.
 ask_secret() {
   local prompt="$1" out pin
-  if has_tty; then
+  # Chamada sempre dentro de $(...), por isso o stdout nunca é um terminal;
+  # o gum desenha no stderr, e é esse que conta.
+  if [[ -t 0 && -t 2 ]]; then
     gum input --password --header "$prompt"
     return $?
   fi
   local pe
   pe=$(command -v pinentry-gnome3 || command -v pinentry-gtk || command -v pinentry-qt || command -v pinentry) ||
-    { printf 'Sem terminal e sem pinentry disponível.\n' >&2; return 1; }
+    { printf '%s\n' "$(t no_tty_pinentry)" >&2; return 1; }
   out=$(printf 'SETTITLE upSSH\nSETPROMPT %s\nSETDESC %s\nGETPIN\nBYE\n' \
-    "Senha:" "$prompt" | "$pe" 2>/dev/null)
+    "$(t pin_label)" "$prompt" | "$pe" 2>/dev/null)
   pin=$(awk '/^D /{ print substr($0, 3); found=1 } END { exit !found }' <<<"$out") || return 1
   # pinentry devolve o valor com percent-encoding (%25, %0A, ...).
   printf '%s' "$pin" | python3 -c 'import sys,re; d=sys.stdin.read(); sys.stdout.write(re.sub(r"%([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), d))'
@@ -403,7 +468,44 @@ slugify() {
   printf '%s' "$1" |
     iconv -t ascii//TRANSLIT 2>/dev/null |
     tr '[:upper:]' '[:lower:]' |
-    sed -e 's/[^a-z0-9]\+/-/g' -e 's/^-\+//' -e 's/-\+$//'
+    sed -e 's/[^a-z0-9]\+/-/g' -e 's/^-\+//' -e 's/-\+$//' |
+    cut -c1-48 | sed 's/-\+$//'
+}
+
+# ------------------------------------------------------------------ validação
+# need_value "$@": a opção em $1 tem de trazer um valor em $2 (senão o
+# `shift 2` falhava e o ciclo de argumentos nunca terminava).
+need_value() {
+  (($# >= 2)) && return 0
+  printf '%s\n' "$(t missing_value "$1")" >&2
+  return 1
+}
+
+# Os ids entram em chaves do menu do Omarchy e em linhas de comando; só este
+# formato é aceite, venha o valor do formulário, do painel ou de um ficheiro.
+valid_id() { [[ $1 =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; }
+
+# Host e utilizador vão parar ao argv do ssh: sem espaços, sem caracteres de
+# controlo e sem um '-' inicial, que o ssh leria como opção.
+valid_endpoint() { [[ -n $1 && $1 != -* && ! $1 =~ [[:space:][:cntrl:]] ]]; }
+
+valid_port() { [[ $1 =~ ^[0-9]{1,5}$ ]] && ((10#$1 >= 1 && 10#$1 <= 65535)); }
+
+# Texto livre (nome, grupo, caminho da chave, opções) sem caracteres de
+# controlo, que num terminal serviriam para injectar sequências de escape, nem
+# marcas bidireccionais, que deixam um nome parecer outro.
+JQ_CLEAN='def c: tostring | gsub("[[:cntrl:]\u200e\u200f\u202a-\u202e\u2066-\u2069]"; "");'
+
+strip_cntrl() { jq -rnj --arg v "$1" "$JQ_CLEAN"' $v | c'; }
+
+# Nenhum ficheiro nosso chega perto disto; um maior não é lido.
+MAX_FILE=1048576
+
+check_size() {
+  local f="$1" n
+  [[ -f $f ]] || return 0
+  n=$(stat -c %s -- "$f" 2>/dev/null) || return 1
+  ((n <= MAX_FILE)) || { err "$(t store_too_big "$f")"; return 1; }
 }
 
 ensure_store() {
@@ -411,17 +513,53 @@ ensure_store() {
   chmod 700 "$CONFIG_DIR"
   if [[ ! -f $SERVERS ]]; then
     printf '%s\n' '{"version":1,"servers":[]}' >"$SERVERS"
-    chmod 600 "$SERVERS"
   fi
+  check_size "$SERVERS" || exit 1
+}
+
+# Um só escritor de cada vez: o painel e a TUI fazem ler-alterar-gravar sobre
+# os mesmos ficheiros. O lock vive no fd 9 até ao fim do processo (comandos
+# da API) ou até store_unlock (entre acções da TUI).
+STORE_LOCKED=false
+
+store_lock() {
+  [[ $STORE_LOCKED == true ]] && return 0
+  exec 9>>"$CONFIG_DIR/.lock" || return 1
+  if ! flock -w 30 9; then
+    exec 9>&-
+    err "$(t store_busy)"
+    return 1
+  fi
+  STORE_LOCKED=true
+}
+
+store_unlock() {
+  [[ $STORE_LOCKED == true ]] || return 0
+  flock -u 9 2>/dev/null
+  exec 9>&-
+  STORE_LOCKED=false
 }
 
 save_servers() {
   local tmp
   tmp=$(mktemp "$CONFIG_DIR/.servers.XXXXXX") || return 1
   cat >"$tmp" || { rm -f "$tmp"; return 1; }
-  jq -e . "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; err "$(t invalid_json)"; return 1; }
+  jq -e '(.servers | type) == "array"' "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; err "$(t invalid_json)"; return 1; }
   chmod 600 "$tmp"
   mv "$tmp" "$SERVERS"
+}
+
+# Ids cuja senha no cofre já não pode ser usada: o servidor foi apagado sem
+# o cofre abrir, ou um import trocou-lhe o destino. Enquanto aqui estiverem,
+# a senha não é enviada e o id não é reaproveitado; a próxima escrita no
+# cofre apaga-as e limpa a lista.
+stale_ids() { jq -c '.staleSecrets // []' "$SERVERS"; }
+
+is_stale() { jq -e --arg id "$1" '(.staleSecrets // []) | index($id) != null' "$SERVERS" >/dev/null 2>&1; }
+
+stale_clear() {
+  jq -e 'has("staleSecrets")' "$SERVERS" >/dev/null 2>&1 || return 0
+  jq 'del(.staleSecrets)' "$SERVERS" | save_servers
 }
 
 # ---------------------------------------------------------------- cofre (gpg)
@@ -431,19 +569,28 @@ save_servers() {
 # processo, e as ligações seguintes não voltam a pedi-la enquanto o TTL durar.
 # Com MASTER (fluxos de escrita) usa-se o modo loopback, que não mexe na cache.
 secrets_read() {
+  # 9>&-: um gpg-agent arrancado aqui não pode herdar o fd do lock.
   if [[ -n $MASTER ]]; then
     gpg --quiet --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
-      --decrypt "$SECRETS" 3<<<"$MASTER" 2>/dev/null
+      --decrypt "$SECRETS" 3<<<"$MASTER" 2>/dev/null 9>&-
   else
-    gpg --quiet --decrypt "$SECRETS" 2>/dev/null
+    gpg --quiet --decrypt "$SECRETS" 2>/dev/null 9>&-
   fi
 }
 
+# Grava o stdin no cofre — mas só se for um objecto JSON de strings. Um jq
+# que falhe a montante entrega um stdin vazio, e cifrar isso apagaria todas
+# as senhas; nesse caso o cofre fica exactamente como estava.
 secrets_write() {
-  local tmp
+  local plain tmp
+  plain=$(cat) || return 1
+  if ! jq -e 'type == "object" and all(.[]; type == "string")' >/dev/null 2>&1 <<<"$plain"; then
+    err "$(t vault_bad_data)"
+    return 1
+  fi
   tmp=$(mktemp "$CONFIG_DIR/.secrets.XXXXXX") || return 1
-  if gpg --quiet --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
-    --symmetric --cipher-algo AES256 --output "$tmp" 3<<<"$MASTER"; then
+  if printf '%s' "$plain" | gpg --quiet --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
+    --symmetric --cipher-algo AES256 --output "$tmp" 3<<<"$MASTER" 9>&-; then
     chmod 600 "$tmp"
     mv "$tmp" "$SECRETS"
   else
@@ -480,26 +627,40 @@ unlock() {
 
 get_password() {
   [[ -f $SECRETS ]] || return 1
+  is_stale "$1" && return 1
   secrets_read | jq -r --arg id "$1" '.[$id] // empty'
 }
 
-set_password() {
+# vault_update <filtro jq> [argumentos jq...]
+# Aplica o filtro ao cofre decifrado, depois de lhe tirar as senhas
+# marcadas como obsoletas. Segredos entram nos argumentos só como caminhos
+# (--rawfile/--slurpfile sobre um pipe), nunca como texto no argv, que
+# qualquer utilizador lê em /proc/<pid>/cmdline.
+vault_update() {
+  local filter="$1"
+  shift
   unlock || return 1
   local cur
-  cur=$(secrets_read) || return 1
-  printf '%s' "$cur" | jq --arg id "$1" --arg pw "$2" '.[$id] = $pw' | secrets_write
+  cur=$(secrets_read) || { err "$(t vault_read_fail)"; return 1; }
+  [[ -n $cur ]] || cur='{}'
+  printf '%s' "$cur" |
+    jq "$@" --argjson stale "$(stale_ids)" "del(.[\$stale[]]) | $filter" 2>/dev/null |
+    secrets_write || return 1
+  stale_clear
+}
+
+set_password() {
+  vault_update '.[$id] = $pw' --arg id "$1" --rawfile pw <(printf '%s' "$2")
 }
 
 del_password() {
   [[ -f $SECRETS ]] || return 0
-  unlock || return 1
-  local cur
-  cur=$(secrets_read) || return 1
-  printf '%s' "$cur" | jq --arg id "$1" 'del(.[$id])' | secrets_write
+  vault_update 'del(.[$id])' --arg id "$1"
 }
 
 change_master() {
   [[ -f $SECRETS ]] || { vault_create; return; }
+  store_lock || return 1
   unlock || return 1
   local plain a b
   plain=$(secrets_read) || { err "$(t vault_read_fail)"; return 1; }
@@ -513,15 +674,19 @@ change_master() {
 # Importa um ficheiro de senhas em texto limpo para dentro do cofre e apaga-o.
 vault_init() {
   ensure_store
+  store_lock || return 1
   if [[ ! -f $SECRETS ]]; then
     vault_create || return 1
   else
     unlock || return 1
   fi
   if [[ -f $PENDING ]]; then
-    local cur
-    cur=$(secrets_read) || return 1
-    if jq -s '.[0] * .[1]' <(printf '%s' "$cur") "$PENDING" | secrets_write; then
+    check_size "$PENDING" || return 1
+    if ! jq -e -s 'length == 1 and (.[0] | type == "object" and all(.[]; type == "string"))' "$PENDING" >/dev/null 2>&1; then
+      err "$(t pending_fail)"
+      return 1
+    fi
+    if vault_update '. * $p[0]' --slurpfile p "$PENDING"; then
       shred -u "$PENDING" 2>/dev/null || rm -f "$PENDING"
       ok "$(t pending_imported)"
     else
@@ -538,26 +703,41 @@ server_json() { jq -c --arg id "$1" '.servers[] | select(.id == $id)' "$SERVERS"
 
 server_exists() { [[ -n $(server_json "$1") ]]; }
 
-groups_list() { jq -r '[.servers[].group] | unique | .[]' "$SERVERS"; }
+groups_list() { jq -r "$JQ_CLEAN"' [.servers[].group | strings | c] | unique | .[]' "$SERVERS"; }
 
+# id_taken <id> [json]: ocupado por um servidor ou por uma senha obsoleta
+# ainda por apagar — reaproveitá-lo faria essa senha seguir para outro host.
+id_taken() {
+  local filter='any(.servers[]; .id == $id) or ((.staleSecrets // []) | index($id) != null)'
+  if (($# > 1)); then
+    jq -e --arg id "$1" "$filter" >/dev/null 2>&1 <<<"$2"
+  else
+    jq -e --arg id "$1" "$filter" "$SERVERS" >/dev/null 2>&1
+  fi
+}
+
+# new_id <nome> [json]
 new_id() {
   local base id n=2
   base=$(slugify "$1")
-  [[ -n $base ]] || base="servidor"
+  valid_id "$base" || base="servidor"
   id="$base"
-  while server_exists "$id"; do
+  while id_taken "$id" "${@:2}"; do
     id="$base-$n"
     ((n++))
   done
   printf '%s' "$id"
 }
 
+# Campos mostrados no terminal passam por aqui: um nome importado não pode
+# trazer sequências de escape.
+
 cmd_list() {
   ensure_store
   {
     printf '%s\t%s\t%s\tAUTH\t%s\n' "$(t col_group)" "$(t col_name)" "$(t col_dest)" "$(t col_id)"
-    jq -r '.servers | sort_by(.group, .name) | .[] |
-      [.group, .name, (.user + "@" + .host + ":" + (.port|tostring)), .auth, .id] | @tsv' "$SERVERS"
+    jq -r "$JQ_CLEAN"' .servers | sort_by(.group, .name) | .[] |
+      [(.group|c), (.name|c), ((.user|c) + "@" + (.host|c) + ":" + (.port|c)), (.auth|c), (.id|c)] | @tsv' "$SERVERS"
   } | column -t -s $'\t'
 }
 
@@ -575,10 +755,12 @@ ensure_host_key() {
   [[ $port == 22 ]] && target="$host" || target="[$host]:$port"
   ssh-keygen -F "$target" >/dev/null 2>&1 && return 0
 
-  scan=$(ssh-keyscan -p "$port" -T 8 "$host" 2>/dev/null | grep -v '^#')
+  scan=$(ssh-keyscan -p "$port" -T 8 -- "$host" 2>/dev/null | grep -v '^#')
   if [[ -z $scan ]]; then
-    err "$(t hostkey_fetch_fail "$host" "$port")"
-    return 1
+    # Alias do ssh_config, ProxyJump, known_hosts global...: o ssh sabe
+    # resolver o que o keyscan não alcança, por isso a decisão fica com ele.
+    warn "$(t hostkey_unverified "$host" "$port")"
+    return 0
   fi
 
   warn "$(t hostkey_first "$host" "$port")"
@@ -600,13 +782,14 @@ ensure_host_key() {
 cmd_connect() {
   local id="${1:-}"
   [[ -n $id ]] || die "$(t usage_connect)"
+  valid_id "$id" || die "$(t bad_id "$(strip_cntrl "$id")")"
   ensure_store
   local s
   s=$(server_json "$id")
   [[ -n $s ]] || die "$(t not_found "$id")"
 
   local name host port user auth identity options
-  name=$(jq -r '.name' <<<"$s")
+  name=$(jq -r "$JQ_CLEAN"' .name | c' <<<"$s")
   host=$(jq -r '.host' <<<"$s")
   port=$(jq -r '.port' <<<"$s")
   user=$(jq -r '.user' <<<"$s")
@@ -614,7 +797,16 @@ cmd_connect() {
   identity=$(jq -r '.identity // ""' <<<"$s")
   options=$(jq -r '.options // ""' <<<"$s")
 
-  ensure_host_key "$host" "$port" || { hold; return 1; }
+  # Dados antigos ou editados à mão passam pela mesma validação do cadastro.
+  valid_endpoint "$host" || { err "$(t bad_field host "$(strip_cntrl "$host")")"; hold; return 1; }
+  valid_endpoint "$user" || { err "$(t bad_field user "$(strip_cntrl "$user")")"; hold; return 1; }
+  valid_port "$port" || { err "$(t bad_port "$(strip_cntrl "$port")")"; hold; return 1; }
+
+  # Só o login por senha precisa disto: debaixo do sshpass o ssh não
+  # consegue perguntar pela chave. Com chave, o próprio ssh pergunta.
+  if [[ $auth == password ]]; then
+    ensure_host_key "$host" "$port" || { hold; return 1; }
+  fi
 
   local -a cmd=(ssh)
   if [[ -n $options ]]; then
@@ -624,20 +816,28 @@ cmd_connect() {
   fi
   cmd+=(-p "$port")
   if [[ -n $identity ]]; then
-    local keyfile="${identity/#\~/$HOME}"
+    local keyfile="${identity/#\~/$HOME}" real mode
     if [[ ! -f $keyfile ]]; then
       err "$(t key_missing "$keyfile")"
       hold
       return 1
     fi
     # O ssh recusa chaves legíveis por outros. Pastas sincronizadas (Nextcloud,
-    # Dropbox) repõem 0644 com frequência, por isso corrige-se a cada ligação.
-    if [[ $(stat -c '%a' "$keyfile") != 600 ]]; then
-      chmod 600 "$keyfile" && warn "$(t key_perms_fixed "$keyfile")"
+    # Dropbox) repõem 0644 com frequência, por isso corrige-se a cada ligação —
+    # mas só dentro de ~/.ssh e em ficheiros nossos; fora disso apenas avisa.
+    real=$(readlink -f -- "$keyfile")
+    mode=$(stat -c '%a' -- "$real")
+    if [[ $mode != 600 && $mode != 400 ]]; then
+      if [[ $real == "$(readlink -f -- "$HOME/.ssh")/"* && -O $real ]]; then
+        chmod 600 -- "$real" && warn "$(t key_perms_fixed "$keyfile")"
+      else
+        warn "$(t key_perms_skip "$keyfile" "$mode")"
+      fi
     fi
     cmd+=(-i "$keyfile")
   fi
-  cmd+=("$user@$host")
+  # "--" fecha as opções: o destino nunca é lido como uma.
+  cmd+=(-- "$user@$host")
 
   printf '\033]0;%s\007' "$name"
   gum style --border rounded --padding "0 2" --margin "1 0" --border-foreground 4 \
@@ -652,6 +852,7 @@ cmd_connect() {
       case $rc in
       0 | 1 | 130) ;;
       5) err "$(t pass_refused "$host")"; hold ;;
+      6) err "$(t hostkey_unknown "$host" "$port")"; hold ;;
       *) err "$(t conn_error "$rc")"; hold ;;
       esac
       return $rc
@@ -677,6 +878,42 @@ pick_group() {
     [[ -n $sel ]] || return 1
   fi
   printf '%s' "$sel"
+}
+
+# write_server <id|vazio> <nome> <grupo> <host> <porta> <utilizador> <auth>
+#              <identidade> <opções>
+# Único caminho de escrita de um servidor (TUI, painel): valida tudo, grava
+# e imprime o id final. Devolve 2 quando um campo é inválido.
+write_server() {
+  local id="$1" name group host="$4" port="${5:-22}" user="$6" auth="$7" identity options
+  name=$(strip_cntrl "$2")
+  group=$(strip_cntrl "$3")
+  identity=$(strip_cntrl "$8")
+  options=$(strip_cntrl "$9")
+  [[ -n ${name//[[:space:]]/} ]] || { err "$(t req_name)"; return 2; }
+  [[ -n ${group//[[:space:]]/} ]] || group="Geral"
+  valid_endpoint "$host" || { err "$(t bad_field host "$(strip_cntrl "$host")")"; return 2; }
+  valid_endpoint "$user" || { err "$(t bad_field user "$(strip_cntrl "$user")")"; return 2; }
+  valid_port "$port" || { err "$(t bad_port "$(strip_cntrl "$port")")"; return 2; }
+  port=$((10#$port))
+  [[ $auth == password ]] || auth=key
+  [[ $auth == key ]] || identity=""
+  if [[ -n $id ]]; then
+    valid_id "$id" || { err "$(t bad_id "$(strip_cntrl "$id")")"; return 2; }
+  fi
+
+  store_lock || return 1
+  [[ -n $id ]] || id=$(new_id "$name")
+
+  jq --arg id "$id" --arg name "$name" --arg group "$group" --arg host "$host" \
+    --argjson port "$port" --arg user "$user" --arg auth "$auth" \
+    --arg identity "$identity" --arg options "$options" '
+      .servers = ((.servers // []) | map(select(.id != $id))) + [{
+        id: $id, name: $name, group: $group, host: $host, port: $port,
+        user: $user, auth: $auth, identity: $identity, options: $options
+      }] | .servers |= sort_by(.group, .name)
+    ' "$SERVERS" | save_servers || return 1
+  printf '%s' "$id"
 }
 
 # form <id-ou-vazio>
@@ -709,7 +946,7 @@ server_form() {
 
   port=$(gum input --header "$(t f_port)" --value "$d_port") || return 1
   port=${port:-22}
-  [[ $port =~ ^[0-9]+$ ]] || { err "$(t bad_port "$port")"; return 1; }
+  valid_port "$port" || { err "$(t bad_port "$port")"; return 1; }
 
   user=$(gum input --header "$(t f_user)" --value "$d_user") || return 1
   [[ -n $user ]] || { err "$(t req_user)"; return 1; }
@@ -729,16 +966,10 @@ server_form() {
   options=$(gum input --header "$(t f_options)" --value "$d_options" \
     --placeholder "-oHostKeyAlgorithms=+ssh-rsa") || return 1
 
-  [[ -n $id ]] || id=$(new_id "$name")
-
-  jq --arg id "$id" --arg name "$name" --arg group "$group" --arg host "$host" \
-    --argjson port "$port" --arg user "$user" --arg auth "$auth" \
-    --arg identity "$identity" --arg options "$options" '
-      .servers = ((.servers // []) | map(select(.id != $id))) + [{
-        id: $id, name: $name, group: $group, host: $host, port: $port,
-        user: $user, auth: $auth, identity: $identity, options: $options
-      }] | .servers |= sort_by(.group, .name)
-    ' "$SERVERS" | save_servers || return 1
+  # O lock é tomado aqui, no processo principal: o $(...) corre numa subshell
+  # e um lock tomado lá dentro soltava-se logo à saída.
+  store_lock || return 1
+  id=$(write_server "$id" "$name" "$group" "$host" "$port" "$user" "$auth" "$identity" "$options") || return 1
 
   if [[ $auth == password ]]; then
     local pw
@@ -747,15 +978,15 @@ server_form() {
   fi
 
   menu_sync
-  ok "$(t saved_as "$name" "$id")"
+  ok "$(t saved_as "$(strip_cntrl "$name")" "$id")"
 }
 
 pick_server_id() {
-  local group="${1:-}" header="${2:-Servidor:}"
+  local group="${1:-}" header="${2:-$(t which_edit)}"
   local -a rows=() labels=() ids=()
-  mapfile -t rows < <(jq -r --arg g "$group" '
+  mapfile -t rows < <(jq -r --arg g "$group" "$JQ_CLEAN"'
     .servers | sort_by(.group, .name) | .[] | select($g == "" or .group == $g) |
-    [.id, .name, (.user + "@" + .host + ":" + (.port|tostring)), .group, .auth] | @tsv' "$SERVERS")
+    [(.id|c), (.name|c), ((.user|c) + "@" + (.host|c) + ":" + (.port|c)), (.group|c), (.auth|c)] | @tsv' "$SERVERS")
   ((${#rows[@]})) || { warn "$(t no_servers)"; return 1; }
 
   local r id name addr grp auth mark
@@ -779,14 +1010,29 @@ pick_server_id() {
   return 1
 }
 
+# Tira o servidor e a senha dele. Se o cofre não abrir, o id fica marcado
+# como obsoleto: a senha antiga não pode acabar num servidor novo que
+# herde o mesmo id.
+delete_server() {
+  local id="$1"
+  store_lock || return 1
+  # Numa só escrita: o servidor sai e, havendo cofre, o id fica marcado.
+  jq --arg id "$id" --argjson vault "$([[ -f $SECRETS ]] && echo true || echo false)" '
+    .servers |= map(select(.id != $id))
+    | if $vault then .staleSecrets = (((.staleSecrets // []) + [$id]) | unique) else . end
+  ' "$SERVERS" | save_servers || return 1
+  if [[ -f $SECRETS ]]; then
+    del_password "$id" >/dev/null || warn "$(t delete_pass_fail)"
+  fi
+}
+
 remove_server() {
   local id
   id=$(pick_server_id "" "$(t which_remove)") || return 1
   local name
-  name=$(server_json "$id" | jq -r '.name')
+  name=$(server_json "$id" | jq -r "$JQ_CLEAN"' .name | c')
   gum confirm "$(t confirm_remove "$name")" --default=no || return 0
-  jq --arg id "$id" '.servers |= map(select(.id != $id))' "$SERVERS" | save_servers || return 1
-  [[ -f $SECRETS ]] && del_password "$id" >/dev/null 2>&1
+  delete_server "$id" || return 1
   menu_sync
   ok "$(t removed "$name")"
 }
@@ -797,6 +1043,7 @@ set_server_password() {
   local pw
   pw=$(ask_secret "$(t new_pass)") || return 1
   [[ -n $pw ]] || { err "$(t empty_pass)"; return 1; }
+  store_lock || return 1
   set_password "$id" "$pw" || return 1
   jq --arg id "$id" '.servers |= map(if .id == $id then .auth = "password" else . end)' "$SERVERS" | save_servers
   menu_sync
@@ -807,8 +1054,10 @@ rename_group() {
   local old new
   old=$(groups_list | gum choose --header "$(t which_group_rename)") || return 1
   new=$(gum input --header "$(t new_name)" --value "$old") || return 1
+  new=$(strip_cntrl "$new")
   [[ -n $new ]] || return 1
-  jq --arg o "$old" --arg n "$new" '.servers |= map(if .group == $o then .group = $n else . end)' "$SERVERS" | save_servers || return 1
+  store_lock || return 1
+  jq --arg o "$old" --arg n "$new" '.servers |= map(if .group == $o then .group = $n else . end) | .servers |= sort_by(.group, .name)' "$SERVERS" | save_servers || return 1
   menu_sync
   ok "$(t group_renamed "$new")"
 }
@@ -817,6 +1066,9 @@ move_server_group() {
   local id group
   id=$(pick_server_id "" "$(t which_move)") || return 1
   group=$(pick_group "$(t new_group)") || return 1
+  group=$(strip_cntrl "$group")
+  [[ -n $group ]] || return 1
+  store_lock || return 1
   jq --arg id "$id" --arg g "$group" '.servers |= map(if .id == $id then .group = $g else . end) | .servers |= sort_by(.group, .name)' "$SERVERS" | save_servers || return 1
   menu_sync
   ok "$(t moved_to "$group")"
@@ -827,88 +1079,216 @@ move_server_group() {
 menu_block() {
   # O menu do Omarchy congela a altura maxima na primeira lista aberta, por
   # isso a rota "upssh" lista todos os servidores (card alto e pesquisavel) e os
-  # grupos ficam em "upssh.grupos", ja a herdar essa altura.
-  printf '%s\n' "$BEGIN_MARK"
-  printf '  "upssh": {"icon":"\\uf233","label":"upSSH","aliases":["ssh","servidores","acessos","remoto"],"description":"%s"},\n' "$(t menu_root_desc)"
-
-  jq -r --arg self "$SELF" '
-    .servers | sort_by(.group, .name) | .[] |
-    "  \"upssh." + .id + "\": " + ({
-      icon: "\uf233",
-      label: .name,
-      description: (.group + " · " + .user + "@" + .host + ":" + (.port|tostring)),
-      aliases: [.group, .host],
-      action: ("omarchy-launch-tui --app-id=org.upssh " + $self + " connect " + .id)
-    } | tojson) + ","' "$SERVERS"
-
-  printf '  "upssh.grupos": {"icon":"\\uf0c0","label":"%s","description":"%s"},\n' "$(t menu_bygroup)" "$(t menu_bygroup_desc)"
-  local group slug
+  # grupos ficam em "upssh._grupos", ja a herdar essa altura. As entradas
+  # fixas começam por "_", que nenhum id de servidor pode ter.
+  #
+  # Tudo sai do jq: chaves e valores passam por tojson e os comandos por @sh,
+  # por isso nenhum nome, grupo ou id consegue fechar uma string do JSONC nem
+  # acrescentar comandos à acção que o menu corre com bash -lc.
+  local -A used=()
+  local slugs='[]' group slug base n
   while IFS= read -r group; do
     [[ -n $group ]] || continue
-    slug=$(slugify "$group")
-    printf '  "upssh.grupos.%s": {"icon":"\\uf0c0","label":%s},\n' "$slug" "$(jq -Rn --arg v "$group" '$v')"
-    jq -r --arg g "$group" --arg slug "$slug" --arg self "$SELF" '
-      .servers | sort_by(.name) | .[] | select(.group == $g) |
-      "  \"upssh.grupos." + $slug + "." + .id + "\": " + ({
-        icon: "\uf233",
-        label: .name,
-        description: (.user + "@" + .host + ":" + (.port|tostring)),
-        action: ("omarchy-launch-tui --app-id=org.upssh " + $self + " connect " + .id)
-      } | tojson) + ","' "$SERVERS"
+    base=$(slugify "$group")
+    [[ -n $base ]] || base="grupo"
+    slug="$base"
+    n=2
+    while [[ -n ${used[$slug]-} ]]; do
+      slug="$base-$n"
+      ((n++))
+    done
+    used[$slug]=1
+    slugs=$(jq -c --arg g "$group" --arg s "$slug" '. + [[$g, $s]]' <<<"$slugs")
   done < <(groups_list)
 
-  printf '  "upssh.gerir": {"icon":"\\uf013","label":"%s","description":"%s","action":"omarchy-launch-tui --app-id=org.upssh %s"},\n' "$(t menu_manage)" "$(t menu_manage_desc)" "$SELF"
+  printf '%s\n' "$BEGIN_MARK"
+  jq -r --arg self "$SELF" --argjson slugs "$slugs" \
+    --arg rootDesc "$(t menu_root_desc)" --arg byGroup "$(t menu_bygroup)" \
+    --arg byGroupDesc "$(t menu_bygroup_desc)" --arg manage "$(t menu_manage)" \
+    --arg manageDesc "$(t menu_manage_desc)" "$JQ_CLEAN"'
+    def launch($args): "omarchy-launch-tui --app-id=org.upssh " + ([$self] + $args | @sh);
+    def entry($k; $v): "  " + ($k | tojson) + ": " + ($v | tojson) + ",";
+    def dest: (.user|c) + "@" + (.host|c) + ":" + (.port|c);
+    [.servers[] | select((.id | type) == "string" and (.id | test("^[a-z0-9][a-z0-9-]{0,63}$")))] as $srv |
+    entry("upssh"; {icon: "", label: "upSSH", aliases: ["ssh", "servidores", "acessos", "remoto"], description: $rootDesc}),
+    ($srv | sort_by(.group, .name) | .[] |
+      entry("upssh." + .id; {icon: "", label: (.name|c), description: ((.group|c) + " · " + dest),
+        aliases: [(.group|c), (.host|c)], action: launch(["connect", .id])})),
+    entry("upssh._grupos"; {icon: "", label: $byGroup, description: $byGroupDesc}),
+    ($slugs[] | .[0] as $g | .[1] as $s |
+      entry("upssh._grupos." + $s; {icon: "", label: $g}),
+      ($srv | map(select((.group|c) == $g)) | sort_by(.name) | .[] |
+        entry("upssh._grupos." + $s + "." + .id; {icon: "", label: (.name|c), description: dest,
+          action: launch(["connect", .id])}))),
+    entry("upssh._gerir"; {icon: "", label: $manage, description: $manageDesc, action: launch([])})
+  ' "$SERVERS" || return 1
   printf '%s\n' "$END_MARK"
 }
 
+# Reescreve o bloco do upSSH no menu do Omarchy. O trabalho está em
+# MENU_MERGE_PY (python): tira o bloco antigo, insere o novo antes da
+# chaveta que fecha a raiz e só devolve o resultado se o Omarchy o
+# conseguir ler e se todas as entradas do utilizador lá continuarem.
 menu_sync() {
   ensure_store
+  store_lock || return 1
+  local target dir mode block tmp rc
+  # Um link (dotfiles) é seguido até ao ficheiro real, que é o que se
+  # reescreve, e o link fica. Um link partido não é seguido.
+  if [[ -L $MENU_FILE && ! -e $MENU_FILE ]]; then
+    err "$(t menu_link_broken "$MENU_FILE")"
+    return 1
+  fi
   mkdir -p "$(dirname "$MENU_FILE")"
-  [[ -f $MENU_FILE ]] || printf '{\n}\n' >"$MENU_FILE"
-  local block tmp
-  block=$(menu_block)
-  tmp=$(mktemp) || return 1
-  BLOCK="$block" BEGIN_MARK="$BEGIN_MARK" END_MARK="$END_MARK" \
-    python3 - "$MENU_FILE" >"$tmp" <<'PYEOF'
-import os, sys
+  target=$(readlink -f -- "$MENU_FILE") || return 1
+  [[ -e $target ]] || printf '{\n}\n' >"$target" || return 1
+  check_size "$target" || return 1
+  mode=$(stat -c '%a' -- "$target") || return 1
+  dir=$(dirname "$target")
 
-path = sys.argv[1]
-begin, end = os.environ["BEGIN_MARK"], os.environ["END_MARK"]
-block = os.environ["BLOCK"].rstrip("\n").split("\n")
-
-lines = open(path, encoding="utf-8").read().split("\n")
-
-out, skip = [], False
-for line in lines:
-    if line.rstrip() == begin.rstrip():
-        skip = True
-        continue
-    if line.rstrip() == end.rstrip():
-        skip = False
-        continue
-    if not skip:
-        out.append(line)
-
-# Drop trailing blank lines, then insert before the final closing brace.
-while out and out[-1].strip() == "":
-    out.pop()
-if not out or out[-1].strip() != "}":
-    out = ["{", "}"] if not out else out + ["}"]
-    if out[0].strip() != "{":
-        out.insert(0, "{")
-
-out = out[:-1] + block + ["}", ""]
-sys.stdout.write("\n".join(out))
-PYEOF
-  if [[ -s $tmp ]]; then
-    cp -p "$MENU_FILE" "$MENU_FILE.bak" 2>/dev/null
-    mv "$tmp" "$MENU_FILE"
-  else
+  block=$(menu_block) || { err "$(t menu_sync_fail)"; return 1; }
+  tmp=$(mktemp "$dir/.omarchy-menu.upssh.XXXXXX") || return 1
+  BLOCK="$block" python3 -c "$MENU_MERGE_PY" "$target" >"$tmp"
+  rc=$?
+  case $rc in
+  0) ;;
+  3) rm -f "$tmp"; err "$(t menu_markers_broken "$MENU_FILE")"; return 1 ;;
+  4) rm -f "$tmp"; err "$(t menu_file_invalid "$MENU_FILE")"; return 1 ;;
+  *) rm -f "$tmp"; err "$(t menu_sync_fail)"; return 1 ;;
+  esac
+  if [[ ! -s $tmp ]]; then
     rm -f "$tmp"
     err "$(t menu_sync_fail)"
     return 1
   fi
+  chmod "$mode" "$tmp"
+  mv -f -T "$tmp" "$target"
 }
+
+# shellcheck disable=SC2016
+MENU_MERGE_PY='
+import json, os, re, sys
+
+path = sys.argv[1]
+block = os.environ["BLOCK"].rstrip("\n")
+text = open(path, encoding="utf-8").read().replace("\r\n", "\n")
+
+BEGIN, END = "// >>> upssh", "// <<< upssh"
+
+# Os marcadores têm de vir em pares abre/fecha. Se o bloco estiver partido
+# (editado à mão, colado pela metade), não há forma segura de saber onde
+# acaba, e apagar até ao fim do ficheiro levaria entradas do utilizador.
+# Nesse caso sai com 3 sem escrever nada e o ficheiro fica como está.
+kinds = []
+for line in text.split("\n"):
+    t = line.strip()
+    if t.startswith(BEGIN):
+        kinds.append("begin")
+    elif t.startswith(END):
+        kinds.append("end")
+if kinds != ["begin", "end"] * (len(kinds) // 2):
+    sys.exit(3)
+
+out, skip = [], False
+for line in text.split("\n"):
+    t = line.strip()
+    if t.startswith(BEGIN):
+        skip = True
+    elif t.startswith(END):
+        skip = False
+    elif not skip:
+        out.append(line)
+text = "\n".join(out)
+
+
+def root_close(t):
+    """Posição da chaveta que fecha o objecto da raiz e do último caracter
+    significativo antes dela, saltando strings e comentários."""
+    i, n, depth, opened, last = 0, len(t), 0, False, None
+    while i < n:
+        c = t[i]
+        if c == "\"":
+            j = i + 1
+            while j < n and t[j] != "\"":
+                j += 2 if t[j] == "\\" else 1
+            if j >= n or depth == 0:
+                return None
+            last, i = j, j + 1
+            continue
+        if t.startswith("//", i):
+            j = t.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if t.startswith("/*", i):
+            j = t.find("*/", i + 2)
+            if j < 0:
+                return None
+            i = j + 2
+            continue
+        if c.isspace():
+            i += 1
+            continue
+        if depth == 0:
+            if opened or c != "{":
+                return None
+            opened, depth, last = True, 1, i
+        elif c in "{[":
+            depth += 1
+            last = i
+        elif c in "}]":
+            depth -= 1
+            if depth == 0:
+                rest = re.sub(r"//[^\n]*|/\*.*?\*/|\s", "", t[i + 1:], flags=re.S)
+                return (i, last) if rest == "" else None
+            last = i
+        else:
+            last = i
+        i += 1
+    return None
+
+
+# O mesmo que o menu do Omarchy faz antes do JSON.parse (MenuModel.js):
+# tira as linhas que são só comentário e as vírgulas finais. O resultado tem
+# de passar por aqui, senão o Omarchy deixava de ler o menu inteiro.
+def omarchy_parse(t):
+    t = re.sub(r"^\s*//[^\n]*(\n|$)", "", t, flags=re.M)
+    t = re.sub(r",(\s*[}\]])", r"\1", t)
+    return json.loads(t)
+
+
+if not text.strip():
+    text = "{\n}\n"
+try:
+    original = omarchy_parse(text)
+except ValueError:
+    sys.exit(4)
+if not isinstance(original, dict) or isinstance(original.get("items"), dict):
+    # Com "items" o Omarchy só lê o que está lá dentro; entradas na raiz
+    # seriam ignoradas em silêncio.
+    sys.exit(4)
+
+pos = root_close(text)
+if pos is None:
+    sys.exit(4)
+close, last = pos
+head, tail = text[:close], text[close:]
+if head[last] not in "{,":
+    head = head[: last + 1] + "," + head[last + 1:]
+head = head.rstrip(" \t")
+if not head.endswith("\n"):
+    head += "\n"
+result = head + block + "\n" + tail
+if not result.endswith("\n"):
+    result += "\n"
+
+try:
+    parsed = omarchy_parse(result)
+except ValueError:
+    sys.exit(4)
+if not isinstance(parsed, dict) or any(parsed.get(k) != v for k, v in original.items()):
+    sys.exit(4)
+sys.stdout.write(result)
+'
 
 # --------------------------------------------- API nao-interativa (painel QML)
 
@@ -919,66 +1299,52 @@ api_save() {
   local id="" name="" group="" host="" port="22" user="root" auth="key" identity="" options=""
   while (($#)); do
     case "$1" in
-    --id) id="$2"; shift 2 ;;
-    --name) name="$2"; shift 2 ;;
-    --group) group="$2"; shift 2 ;;
-    --host) host="$2"; shift 2 ;;
-    --port) port="$2"; shift 2 ;;
-    --user) user="$2"; shift 2 ;;
-    --auth) auth="$2"; shift 2 ;;
-    --identity) identity="$2"; shift 2 ;;
-    --options) options="$2"; shift 2 ;;
-    *) printf 'Argumento desconhecido: %s\n' "$1" >&2; return 2 ;;
+    --id) need_value "$@" || return 2; id="${2-}"; shift 2 ;;
+    --name) need_value "$@" || return 2; name="${2-}"; shift 2 ;;
+    --group) need_value "$@" || return 2; group="${2-}"; shift 2 ;;
+    --host) need_value "$@" || return 2; host="${2-}"; shift 2 ;;
+    --port) need_value "$@" || return 2; port="${2-}"; shift 2 ;;
+    --user) need_value "$@" || return 2; user="${2-}"; shift 2 ;;
+    --auth) need_value "$@" || return 2; auth="${2-}"; shift 2 ;;
+    --identity) need_value "$@" || return 2; identity="${2-}"; shift 2 ;;
+    --options) need_value "$@" || return 2; options="${2-}"; shift 2 ;;
+    *) printf '%s\n' "$(t unknown_arg "$(strip_cntrl "$1")")" >&2; return 2 ;;
     esac
   done
-
-  [[ -n $name ]] || { printf 'O nome é obrigatório.\n' >&2; return 2; }
-  [[ -n $host ]] || { printf 'O host é obrigatório.\n' >&2; return 2; }
-  [[ -n $user ]] || { printf 'O utilizador é obrigatório.\n' >&2; return 2; }
-  [[ -n $group ]] || group="Geral"
-  port=${port:-22}
-  [[ $port =~ ^[0-9]+$ ]] || { printf 'Porta inválida: %s\n' "$port" >&2; return 2; }
-  [[ $auth == password ]] || auth=key
-  [[ $auth == key ]] || identity=""
-
-  [[ -n $id ]] || id=$(new_id "$name")
-
-  jq --arg id "$id" --arg name "$name" --arg group "$group" --arg host "$host" \
-    --argjson port "$port" --arg user "$user" --arg auth "$auth" \
-    --arg identity "$identity" --arg options "$options" '
-      .servers = ((.servers // []) | map(select(.id != $id))) + [{
-        id: $id, name: $name, group: $group, host: $host, port: $port,
-        user: $user, auth: $auth, identity: $identity, options: $options
-      }] | .servers |= sort_by(.group, .name)
-    ' "$SERVERS" | save_servers || return 1
-
+  store_lock || return 1
+  id=$(write_server "$id" "$name" "$group" "$host" "$port" "$user" "$auth" "$identity" "$options") || return $?
   menu_sync >/dev/null 2>&1
   printf '%s\n' "$id"
 }
 
 api_delete() {
   local id="${1:-}"
-  [[ -n $id ]] || { printf 'Uso: upssh delete <id>\n' >&2; return 2; }
-  server_exists "$id" || { printf 'Servidor não encontrado: %s\n' "$id" >&2; return 1; }
-  jq --arg id "$id" '.servers |= map(select(.id != $id))' "$SERVERS" | save_servers || return 1
-  [[ -f $SECRETS ]] && del_password "$id" >/dev/null 2>&1
+  [[ -n $id ]] || { printf '%s\n' "$(t usage "upssh delete <id>")" >&2; return 2; }
+  valid_id "$id" || { printf '%s\n' "$(t bad_id "$(strip_cntrl "$id")")" >&2; return 2; }
+  server_exists "$id" || { printf '%s\n' "$(t not_found "$id")" >&2; return 1; }
+  delete_server "$id" || return 1
   menu_sync >/dev/null 2>&1
 }
 
 # Lê a senha da primeira linha do stdin, para o painel não a passar por argv.
 api_set_password() {
   local id="${1:-}" pw
-  [[ -n $id ]] || { printf 'Uso: upssh set-password <id>\n' >&2; return 2; }
+  [[ -n $id ]] || { printf '%s\n' "$(t usage "upssh set-password <id>")" >&2; return 2; }
+  valid_id "$id" || { printf '%s\n' "$(t bad_id "$(strip_cntrl "$id")")" >&2; return 2; }
   IFS= read -r pw || true
-  [[ -n $pw ]] || { printf 'Senha vazia.\n' >&2; return 2; }
+  [[ -n $pw ]] || { printf '%s\n' "$(t empty_pass_api)" >&2; return 2; }
+  store_lock || return 1
+  server_exists "$id" || { printf '%s\n' "$(t not_found "$id")" >&2; return 1; }
   set_password "$id" "$pw" || return 1
   jq --arg id "$id" '.servers |= map(if .id == $id then .auth = "password" else . end)' "$SERVERS" | save_servers
   menu_sync >/dev/null 2>&1
 }
 
 api_group_rename() {
-  local old="${1:-}" new="${2:-}"
-  [[ -n $old && -n $new ]] || { printf 'Uso: upssh group-rename <antigo> <novo>\n' >&2; return 2; }
+  local old="${1:-}" new
+  new=$(strip_cntrl "${2:-}")
+  [[ -n $old && -n $new ]] || { printf '%s\n' "$(t usage "upssh group-rename <old> <new>")" >&2; return 2; }
+  store_lock || return 1
   jq --arg o "$old" --arg n "$new" '.servers |= map(if .group == $o then .group = $n else . end) | .servers |= sort_by(.group, .name)' "$SERVERS" | save_servers || return 1
   menu_sync >/dev/null 2>&1
 }
@@ -987,8 +1353,16 @@ api_group_rename() {
 # Requer a senha mestra (pinentry quando nao ha terminal).
 api_has_password() {
   [[ -f $SECRETS ]] || { printf '[]\n'; return 0; }
-  unlock >/dev/null 2>&1 || { printf '[]\n'; return 0; }
-  secrets_read | jq -c 'keys'
+  # Leitura pelo gpg-agent: com a senha mestra em cache não pede nada.
+  secrets_read | jq -c --argjson stale "$(stale_ids)" 'keys - $stale' 2>/dev/null || printf '[]\n'
+}
+
+# O que o painel lê: só servidores bem formados, com o tamanho já limitado
+# por ensure_store, e sem campos internos.
+api_json() {
+  jq -c '{version: (.version // 1),
+          servers: [(.servers // [])[] | select(type == "object" and (.id | type) == "string")
+                    | {id, name, group, host, port, user, auth, identity, options}]}' "$SERVERS"
 }
 
 # ------------------------------------------------------- exportar / importar
@@ -999,45 +1373,64 @@ EXPORT_MAGIC="upssh-export"
 # vez de um pinentry: é como o painel gráfico a entrega, sem passar por argv.
 STDIN_PASS=false
 
-# export [--com-senhas] [ficheiro]
+# export [--com-senhas] [--overwrite] [ficheiro]
 # Sem senhas produz JSON legível; com senhas produz um .gpg simétrico cifrado
 # com uma senha escolhida na exportação — deliberadamente separada da senha
 # mestra, para o ficheiro poder viajar sem levar a chave do cofre consigo.
+# Um ficheiro que já exista (ou um link) só é substituído com --overwrite.
 cmd_export() {
-  local with_secrets=false dest=""
+  local with_secrets=false overwrite=false dest=""
   while (($#)); do
     case "$1" in
     --com-senhas | --with-passwords) with_secrets=true; shift ;;
     --stdin-pass) STDIN_PASS=true; shift ;;
-    -*) printf 'Opção desconhecida: %s\n' "$1" >&2; return 2 ;;
+    --overwrite) overwrite=true; shift ;;
+    -*) printf '%s\n' "$(t unknown_arg "$(strip_cntrl "$1")")" >&2; return 2 ;;
     *) dest="$1"; shift ;;
     esac
   done
 
   local stamp payload
-  stamp=$(date +%Y%m%d-%H%M)
+  stamp=$(date +%Y%m%d-%H%M%S)
 
   # Um diálogo de gravação pode devolver só a pasta; nesse caso inventa-se o
   # nome em vez de falhar com "é um directório".
   local ext
   [[ $with_secrets == true ]] && ext="gpg" || ext="json"
-  if [[ -n $dest && -d $dest ]]; then
+  # Se o nome tiver de ser inventado ou completado, já não é o ficheiro que
+  # quem pediu --overwrite confirmou: nesse caso nada é substituído.
+  [[ -n $dest ]] || dest="$HOME"
+  if [[ -d $dest ]]; then
     dest="${dest%/}/upssh-$stamp.$ext"
-  elif [[ -n $dest && $dest != *.$ext && $dest != *.json && $dest != *.gpg ]]; then
+    overwrite=false
+  elif [[ $dest != *.json && $dest != *.gpg ]]; then
     dest="$dest.$ext"
+    overwrite=false
   fi
+  local dir
+  dir=$(dirname -- "$dest")
+  [[ -d $dir ]] || { err "$(t export_write_fail "$dest")"; return 1; }
+  if [[ $overwrite != true && (-e $dest || -L $dest) ]]; then
+    err "$(t export_exists "$dest")"
+    return 1
+  fi
+
   payload=$(jq --arg m "$EXPORT_MAGIC" --arg at "$(date -Is)" \
     '{magic: $m, version: 1, exportedAt: $at, servers: .servers}' "$SERVERS") || return 1
 
+  local a=""
   if [[ $with_secrets == true ]]; then
     [[ -f $SECRETS ]] || { err "$(t vault_none)"; return 1; }
     local vault
     vault=$(secrets_read) || { err "$(t vault_open_fail)"; return 1; }
-    # Só viajam as senhas dos servidores que vão no ficheiro.
-    payload=$(jq -n --argjson p "$payload" --argjson v "$vault" \
-      '$p + {secrets: ($v | with_entries(select(.key as $k | $p.servers | map(.id) | index($k))))}') || return 1
+    # Só viajam as senhas dos servidores que vão no ficheiro, e nunca as
+    # obsoletas. O cofre entra no jq por um pipe, não pelo argv.
+    payload=$(jq --slurpfile v <(printf '%s' "$vault") --argjson stale "$(stale_ids)" '
+      . as $p | . + {secrets: ($v[0] | with_entries(select(.key as $k
+        | ($stale | index($k)) == null and any($p.servers[]; .id == $k))))}' <<<"$payload") || return 1
+    unset vault
 
-    local a b
+    local b
     if [[ $STDIN_PASS == true ]]; then
       IFS= read -r a || true
       b="$a"
@@ -1046,33 +1439,51 @@ cmd_export() {
       b=$(ask_secret "$(t export_pass_confirm)") || return 1
     fi
     [[ -n $a && $a == "$b" ]] || { err "$(t pass_mismatch)"; return 1; }
+  fi
 
-    [[ -n $dest ]] || dest="$HOME/upssh-$stamp.gpg"
-    local tmp
-    tmp=$(mktemp) || return 1
-    if printf '%s' "$payload" | gpg --quiet --batch --yes --pinentry-mode loopback \
-      --passphrase-fd 3 --symmetric --cipher-algo AES256 --output "$tmp" 3<<<"$a"; then
-      chmod 600 "$tmp"
-      mv "$tmp" "$dest"
-    else
+  # Escreve-se primeiro um temporário na pasta de destino (0600 pela umask),
+  # e só depois ele toma o lugar do destino: sem janela com permissões
+  # abertas, sem seguir um link que lá esteja e sem ficheiros a meio.
+  local tmp
+  tmp=$(mktemp "$dir/.upssh-export.XXXXXX") || { err "$(t export_write_fail "$dest")"; return 1; }
+  if [[ $with_secrets == true ]]; then
+    if ! printf '%s' "$payload" | gpg --quiet --batch --yes --pinentry-mode loopback \
+      --passphrase-fd 3 --symmetric --cipher-algo AES256 --output "$tmp" 3<<<"$a" 9>&-; then
       rm -f "$tmp"
       err "$(t export_encrypt_fail)"
       return 1
     fi
+  else
+    printf '%s\n' "$payload" >"$tmp" || { rm -f "$tmp"; err "$(t export_write_fail "$dest")"; return 1; }
+  fi
+  if [[ $overwrite == true ]]; then
+    mv -f -T -- "$tmp" "$dest" || { rm -f "$tmp"; err "$(t export_write_fail "$dest")"; return 1; }
+  else
+    # -n com renameat2(RENAME_NOREPLACE): se entretanto apareceu um
+    # ficheiro no destino, o temporário fica e é apagado.
+    mv -n -T -- "$tmp" "$dest" 2>/dev/null
+    if [[ -e $tmp ]]; then
+      rm -f "$tmp"
+      err "$(t export_exists "$dest")"
+      return 1
+    fi
+  fi
+
+  if [[ $with_secrets == true ]]; then
     ok "$(t exported_secrets "$dest")"
   else
-    [[ -n $dest ]] || dest="$HOME/upssh-$stamp.json"
-    printf '%s\n' "$payload" >"$dest" || return 1
-    chmod 600 "$dest"
     ok "$(t exported_plain "$dest")"
   fi
   printf '%s\n' "$dest"
 }
 
-# Lê o ficheiro, decifrando se for .gpg. Ecoa o JSON.
+# Lê o ficheiro, decifrando se for .gpg. Ecoa o JSON, nunca mais do que
+# MAX_FILE bytes (quem chama verifica se o limite foi atingido).
 read_export_file() {
   local file="$1"
-  if [[ $(head -c 2 "$file" | xxd -p 2>/dev/null) == "8503" ]] || [[ $file == *.gpg ]]; then
+  # Pelo conteúdo, não pelo nome: um JSON em claro é lido tal como está e
+  # tudo o resto é tratado como um ficheiro cifrado pelo gpg.
+  if ! jq -e 'type == "object"' -- "$file" >/dev/null 2>&1; then
     local pass
     if [[ $STDIN_PASS == true ]]; then
       IFS= read -r pass || true
@@ -1080,113 +1491,220 @@ read_export_file() {
       pass=$(ask_secret "$(t import_pass)") || return 1
     fi
     gpg --quiet --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
-      --decrypt "$file" 3<<<"$pass" 2>/dev/null || {
-      err "$(t decrypt_fail)"
-      return 1
-    }
+      --decrypt -- "$file" 3<<<"$pass" 2>/dev/null 9>&- | head -c $((MAX_FILE + 1))
+    ((PIPESTATUS[0] == 0 || PIPESTATUS[0] == 141)) || { err "$(t decrypt_fail)"; return 1; }
   else
-    cat "$file"
+    head -c $((MAX_FILE + 1)) -- "$file"
   fi
 }
 
-# import <ficheiro> [--conflito substituir|manter|copiar|perguntar]
+# Um ficheiro importado pode vir de outra pessoa. Destas opções ssh só se
+# aceitam as que não correm comandos nem baixam a guarda ao ligar
+# (ProxyCommand, LocalCommand, ForwardAgent, StrictHostKeyChecking... ficam
+# todas de fora). Deixa o resultado em SAFE_OPTS_KEPT / SAFE_OPTS_DROPPED.
+SAFE_SSH_KEYS=" hostkeyalgorithms pubkeyacceptedalgorithms pubkeyacceptedkeytypes kexalgorithms ciphers macs serveraliveinterval serveralivecountmax connecttimeout connectionattempts compression tcpkeepalive identitiesonly preferredauthentications passwordauthentication pubkeyauthentication kbdinteractiveauthentication addressfamily loglevel "
+
+safe_options() {
+  local -a toks=() kept=() dropped=()
+  read -ra toks <<<"$1"
+  local i=0 tok spec key
+  while ((i < ${#toks[@]})); do
+    tok=${toks[i]}
+    case $tok in
+    -4 | -6 | -C | -q | -v | -vv | -vvv)
+      kept+=("$tok")
+      ((i++))
+      continue
+      ;;
+    -o) spec=${toks[i + 1]-}; ((i += 2)) ;;
+    -o*) spec=${tok#-o}; ((i++)) ;;
+    *) dropped+=("$tok"); ((i++)); continue ;;
+    esac
+    key=${spec%%=*}
+    key=${key,,}
+    if [[ $spec == *=* && -n $key && $SAFE_SSH_KEYS == *" $key "* ]]; then
+      kept+=("-o$spec")
+    else
+      dropped+=("-o$spec")
+    fi
+  done
+  SAFE_OPTS_KEPT="${kept[*]}"
+  SAFE_OPTS_DROPPED="${dropped[*]}"
+}
+
+# import <ficheiro> [--conflito substituir|manter|copiar|perguntar] [--dry-run]
+# Tudo é validado e decidido numa cópia em memória; servers.json é gravado
+# uma única vez, no fim, e o cofre logo a seguir. Se o ficheiro traz senhas
+# e o cofre não abre, nada é importado.
 cmd_import() {
-  local file="" policy="perguntar"
+  local file="" policy="perguntar" dry=false
   while (($#)); do
     case "$1" in
-    --conflito | --on-conflict) policy="$2"; shift 2 ;;
+    --conflito | --on-conflict) need_value "$@" || return 2; policy="${2-}"; shift 2 ;;
     --stdin-pass) STDIN_PASS=true; shift ;;
-    -*) printf 'Opção desconhecida: %s\n' "$1" >&2; return 2 ;;
+    --dry-run) dry=true; shift ;;
+    -*) printf '%s\n' "$(t unknown_arg "$(strip_cntrl "$1")")" >&2; return 2 ;;
     *) file="$1"; shift ;;
     esac
   done
-  [[ -n $file ]] || { printf 'Uso: upssh import <ficheiro>\n' >&2; return 2; }
+  case $policy in
+  replace) policy=substituir ;;
+  keep) policy=manter ;;
+  copy) policy=copiar ;;
+  ask) policy=perguntar ;;
+  esac
+  case $policy in
+  substituir | manter | copiar | perguntar) ;;
+  *) printf '%s\n' "$(t unknown_arg "$(strip_cntrl "$policy")")" >&2; return 2 ;;
+  esac
+  [[ -n $file ]] || { printf '%s\n' "$(t usage "upssh import <file>")" >&2; return 2; }
   [[ -d $file ]] && { err "$(t is_a_dir "$file")"; return 1; }
   [[ -f $file ]] || { err "$(t file_missing "$file")"; return 1; }
+  if (($(stat -c %s -- "$file") > MAX_FILE)); then
+    err "$(t import_too_big "$file")"
+    return 1
+  fi
+  has_tty || [[ $policy != perguntar ]] || policy=manter
 
   local data
   data=$(read_export_file "$file") || return 1
-  jq -e --arg m "$EXPORT_MAGIC" '.magic == $m and (.servers | type == "array")' <<<"$data" >/dev/null 2>&1 ||
+  if ((${#data} > MAX_FILE)); then
+    err "$(t import_too_big "$file")"
+    return 1
+  fi
+  # Exactamente um objecto: dois JSON seguidos no mesmo ficheiro não passam.
+  jq -e -s --arg m "$EXPORT_MAGIC" 'length == 1 and (.[0] | .magic == $m and (.servers | type == "array"))' <<<"$data" >/dev/null 2>&1 ||
     { err "$(t not_an_export)"; return 1; }
 
-  local total added replaced kept copied
+  # --dry-run: só diz que servidores do ficheiro já existem (um nome por
+  # linha), para o painel mostrar os conflitos antes de importar.
+  if [[ $dry == true ]]; then
+    jq -r --slurpfile d <(printf '%s' "$data") "$JQ_CLEAN"'
+      .servers as $cur | $d[0].servers[] | select(type == "object") | .id as $i
+      | $cur[] | select(.id == $i) | .name | c' "$SERVERS"
+    return 0
+  fi
+
+  store_lock || return 1
+  local work total added=0 replaced=0 kept=0 copied=0 invalid=0
+  work=$(cat "$SERVERS")
   total=$(jq '.servers | length' <<<"$data")
-  added=0 replaced=0 kept=0 copied=0
+  local map='{}'   # id no ficheiro -> id final, para as senhas que vêm atrás
 
-  local pending_secrets="{}"
-  local i count
-  count=$total
-  for ((i = 0; i < count; i++)); do
-    local srv id name
-    srv=$(jq -c --argjson i "$i" '.servers[$i]' <<<"$data")
-    id=$(jq -r '.id' <<<"$srv")
-    name=$(jq -r '.name' <<<"$srv")
+  local i
+  for ((i = 0; i < total; i++)); do
+    local -a f=()
+    mapfile -t f < <(jq -r --argjson i "$i" "$JQ_CLEAN"'
+      .servers[$i] | if type == "object" then
+        (.id // "" | c), (.name // "" | c), (.group // "" | c), (.host // "" | c),
+        (.port // 22 | c), (.user // "" | c), (.auth // "key" | c),
+        (.identity // "" | c), (.options // "" | c)
+      else empty end' <<<"$data")
+    if ((${#f[@]} != 9)); then
+      warn "$(t import_invalid "$((i + 1))" "?")"
+      ((invalid++))
+      continue
+    fi
+    local origid="${f[0]}" id="${f[0]}" name="${f[1]}" group="${f[2]}" host="${f[3]}" port="${f[4]}"
+    local user="${f[5]}" auth="${f[6]}" identity="${f[7]}" options="${f[8]}"
+    local bad=""
+    [[ -n ${name//[[:space:]]/} ]] || bad="name"
+    valid_endpoint "$host" || bad="host"
+    valid_endpoint "$user" || bad="user"
+    valid_port "$port" || bad="port"
+    if [[ -n $bad ]]; then
+      warn "$(t import_invalid "$((i + 1))" "$bad")"
+      ((invalid++))
+      continue
+    fi
+    port=$((10#$port))
+    [[ $auth == password ]] || auth=key
+    [[ $auth == key ]] || identity=""
+    [[ -n ${group//[[:space:]]/} ]] || group="Geral"
+    safe_options "$options"
+    options=$SAFE_OPTS_KEPT
+    [[ -z $SAFE_OPTS_DROPPED ]] || warn "$(t import_opts_dropped "$name" "$SAFE_OPTS_DROPPED")"
 
-    local action="adicionar"
-    if server_exists "$id"; then
+    local action="adicionar" exists=false
+    valid_id "$id" || id=""
+    if [[ -n $id ]] && jq -e --arg id "$id" 'any(.servers[]; .id == $id)' >/dev/null <<<"$work"; then
+      exists=true
+    fi
+    if [[ $exists == true ]]; then
       case "$policy" in
-      substituir) action=substituir ;;
-      manter) action=manter ;;
-      copiar) action=copiar ;;
+      substituir | manter | copiar) action=$policy ;;
       *)
         local cur choice
-        cur=$(server_json "$id")
+        cur=$(jq -c --arg id "$id" '.servers[] | select(.id == $id)' <<<"$work")
         warn "$(t conflict_on "$name" "$id")"
-        printf "$(t conflict_current)" "$(jq -r '.user + "@" + .host + ":" + (.port|tostring) + "  [" + .group + "]"' <<<"$cur")"
-        printf "$(t conflict_incoming)" "$(jq -r '.user + "@" + .host + ":" + (.port|tostring) + "  [" + .group + "]"' <<<"$srv")"
-        choice=$(printf '%s\n' \
-          "Substituir pelo importado" \
-          "Manter o actual" \
-          "Importar como cópia" \
-          "Substituir — e todos os seguintes" \
-          "Manter — e todos os seguintes" \
-          "Importar como cópia — e todos os seguintes" |
-          gum choose --header "O que fazer?" --height 8) || return 1
+        t conflict_current "$(jq -r "$JQ_CLEAN"' (.user|c) + "@" + (.host|c) + ":" + (.port|c) + "  [" + (.group|c) + "]"' <<<"$cur")"
+        t conflict_incoming "$user@$host:$port  [$group]"
+        local -a ckeys=(c_replace c_keep c_copy c_replace_all c_keep_all c_copy_all) clabels=()
+        local k
+        for k in "${ckeys[@]}"; do clabels+=("$(t "$k")"); done
+        choice=$(printf '%s\n' "${clabels[@]}" | gum choose --header "$(t c_what)" --height 8) || return 1
         case "$choice" in
-        "Substituir pelo importado") action=substituir ;;
-        "Manter o actual") action=manter ;;
-        "Importar como cópia") action=copiar ;;
-        "Substituir — e todos"*) action=substituir; policy=substituir ;;
-        "Manter — e todos"*) action=manter; policy=manter ;;
-        "Importar como cópia — e todos"*) action=copiar; policy=copiar ;;
+        "${clabels[0]}") action=substituir ;;
+        "${clabels[1]}") action=manter ;;
+        "${clabels[2]}") action=copiar ;;
+        "${clabels[3]}") action=substituir; policy=substituir ;;
+        "${clabels[4]}") action=manter; policy=manter ;;
+        "${clabels[5]}") action=copiar; policy=copiar ;;
         esac
         ;;
       esac
+    elif [[ -z $id ]] || id_taken "$id" "$work"; then
+      # Id inválido, ou ocupado por uma senha obsoleta: entra com um id novo.
+      id=""
+    fi
+
+    local has_secret=false
+    if [[ $auth == password ]] && jq -e --arg k "$origid" '.secrets[$k]? | type == "string"' >/dev/null 2>&1 <<<"$data"; then
+      has_secret=true
     fi
 
     case "$action" in
     manter) ((kept++)); continue ;;
-    copiar)
-      local newid
-      newid=$(new_id "$name")
-      srv=$(jq -c --arg n "$newid" '.id = $n' <<<"$srv")
-      id="$newid"
-      ((copied++))
+    copiar) id=""; ((copied++)) ;;
+    substituir)
+      ((replaced++))
+      # O destino mudou e o ficheiro não traz senha nova: a senha guardada
+      # não pode seguir para o host novo.
+      if [[ $has_secret == false ]] && ! jq -e --arg id "$id" --arg h "$host" --arg u "$user" --argjson p "$port" \
+        '.servers[] | select(.id == $id) | .host == $h and .user == $u and .port == $p' >/dev/null <<<"$work"; then
+        work=$(jq -c --arg id "$id" '.staleSecrets = (((.staleSecrets // []) + [$id]) | unique)' <<<"$work")
+        warn "$(t import_pass_dropped "$name")"
+      fi
       ;;
-    substituir) ((replaced++)) ;;
     adicionar) ((added++)) ;;
     esac
+    [[ -n $id ]] || id=$(new_id "$name" "$work")
 
-    jq --argjson srv "$srv" '.servers = ((.servers // []) | map(select(.id != $srv.id))) + [$srv] | .servers |= sort_by(.group, .name)' \
-      "$SERVERS" | save_servers || return 1
-
-    # A senha segue o id final, que pode ter mudado em "copiar".
-    local origid pw
-    origid=$(jq -r --argjson i "$i" '.servers[$i].id' <<<"$data")
-    pw=$(jq -r --arg k "$origid" '.secrets[$k] // empty' <<<"$data")
-    [[ -n $pw ]] && pending_secrets=$(jq --arg k "$id" --arg v "$pw" '.[$k] = $v' <<<"$pending_secrets")
+    work=$(jq -c --arg id "$id" --arg name "$name" --arg group "$group" --arg host "$host" \
+      --argjson port "$port" --arg user "$user" --arg auth "$auth" \
+      --arg identity "$identity" --arg options "$options" '
+        .servers = ((.servers // []) | map(select(.id != $id))) + [{
+          id: $id, name: $name, group: $group, host: $host, port: $port,
+          user: $user, auth: $auth, identity: $identity, options: $options
+        }] | .servers |= sort_by(.group, .name)' <<<"$work")
+    [[ $has_secret == true ]] && map=$(jq -c --arg from "$origid" --arg to "$id" '.[$from] = $to' <<<"$map")
   done
 
-  if [[ $(jq 'length' <<<"$pending_secrets") -gt 0 ]]; then
-    unlock || { err "$(t import_no_pass)"; return 1; }
-    local cur
-    cur=$(secrets_read) || return 1
-    jq -s '.[0] * .[1]' <(printf '%s' "$cur") <(printf '%s' "$pending_secrets") | secrets_write ||
+  local nsecrets
+  nsecrets=$(jq 'length' <<<"$map")
+  if ((nsecrets > 0)); then
+    unlock || { err "$(t import_need_vault)"; return 1; }
+  fi
+  printf '%s' "$work" | save_servers || return 1
+  if ((nsecrets > 0)); then
+    # As senhas vão do ficheiro para o cofre sem passar pelo argv.
+    vault_update '. * ($d[0].secrets as $s | $map | with_entries({key: .value, value: $s[.key]}))' \
+      --slurpfile d <(printf '%s' "$data") --argjson map "$map" ||
       { err "$(t import_pass_fail)"; return 1; }
   fi
 
   menu_sync >/dev/null 2>&1
-  ok "$(t import_summary "$total" "$added" "$replaced" "$copied" "$kept")"
+  ok "$(t import_summary "$total" "$added" "$replaced" "$copied" "$((kept + invalid))")"
 }
 
 # ------------------------------------------------------------------------ TUI
@@ -1196,7 +1714,7 @@ tui_export() {
   if gum confirm "$(t export_with_pass)" --default=no; then
     with="--com-senhas"
   fi
-  cmd_export $with >/dev/null
+  cmd_export $with
   gum input --placeholder "$(t enter_back)" >/dev/null
 }
 
@@ -1253,6 +1771,9 @@ manage_menu() {
     m_lang) choose_lang ;;
     m_back) return 0 ;;
     esac
+    # Entre acções a TUI fica à espera do utilizador; o painel não pode
+    # ficar bloqueado por isso.
+    store_unlock
   done
 }
 
@@ -1263,6 +1784,7 @@ tui() {
     if gum confirm "$(t pending_ask)" --default=yes; then
       vault_init || true
     fi
+    store_unlock
   fi
   while :; do
     local -a opts=()
@@ -1288,12 +1810,13 @@ tui() {
       local id
       id=$(pick_server_id "$sel" "$(t pick_server_group "$sel")") && cmd_connect "$id"
     fi
+    store_unlock
   done
 }
 
 # ---------------------------------------------------------------------- entry
 
-require jq gum ssh
+require jq gum ssh gpg python3 flock
 ensure_store
 
 case "${1:-}" in
@@ -1306,6 +1829,7 @@ edit)
   shift
   id="${1:-}"
   [[ -n $id ]] || id=$(pick_server_id "" "$(t which_edit)") || exit 1
+  valid_id "$id" && server_exists "$id" || die "$(t not_found "$(strip_cntrl "$id")")"
   server_form "$id"
   ;;
 remove | rm) remove_server ;;
@@ -1313,7 +1837,7 @@ list | ls) cmd_list ;;
 passwd) set_server_password ;;
 groups) groups_list ;;
 menu-sync) menu_sync && printf "%s\n" "$(t menu_synced)" ;;
-json) cat "$SERVERS" ;;
+json) api_json ;;
 save)
   shift
   api_save "$@"
@@ -1337,10 +1861,12 @@ link)
   # alheio com o mesmo nome nunca é substituído.
   shift
   target="$HOME/.local/bin/upssh"
-  [[ ${1:-} == --name && -n ${2:-} ]] && target="$HOME/.local/bin/$2"
+  if [[ ${1:-} == --name ]]; then
+    [[ ${2:-} =~ ^[A-Za-z0-9._-]+$ ]] || die "$(t usage "upssh link --name <name>")"
+    target="$HOME/.local/bin/$2"
+  fi
   if [[ -e $target || -L $target ]] && ! upssh_owns "$target"; then
-    printf '%s já existe e não foi criado pelo upSSH — nada foi alterado.\n' "$target" >&2
-    printf 'Usa outro nome:  upssh link --name <nome>\n' >&2
+    printf '%s\n' "$(t link_foreign "$target")" >&2
     exit 1
   fi
   mkdir -p "$HOME/.local/bin"
@@ -1374,10 +1900,12 @@ upSSH — gestor de acessos SSH para o Omarchy
   upssh list                  Lista todos os servidores
   upssh passwd                Define/altera a senha de um servidor
   upssh groups                Lista os grupos
-  upssh export [--com-senhas] [ficheiro]
-                              Exporta os servidores (JSON), ou um .gpg cifrado
-  upssh import <ficheiro> [--conflito substituir|manter|copiar]
-                              Importa servidores de uma exportação
+  upssh export [--com-senhas] [--overwrite] [ficheiro]
+                              Exporta os servidores (JSON), ou um .gpg cifrado;
+                              nunca substitui um ficheiro sem --overwrite
+  upssh import <ficheiro> [--conflito substituir|manter|copiar|perguntar] [--dry-run]
+                              Importa servidores de uma exportação (só opções
+                              ssh seguras são aceites de um ficheiro)
   upssh lang [pt|en]          Mostra ou altera o idioma
   upssh menu-sync             Regenera as entradas no menu do Omarchy
   upssh vault-init            Cria o cofre e importa senhas pendentes
@@ -1400,10 +1928,12 @@ upSSH — SSH access manager for Omarchy
   upssh list                  List every server
   upssh passwd                Set or change a server password
   upssh groups                List the groups
-  upssh export [--with-passwords] [file]
-                              Export the servers (JSON), or an encrypted .gpg
-  upssh import <file> [--on-conflict substituir|manter|copiar]
-                              Import servers from an export
+  upssh export [--with-passwords] [--overwrite] [file]
+                              Export the servers (JSON), or an encrypted .gpg;
+                              never replaces a file without --overwrite
+  upssh import <file> [--on-conflict replace|keep|copy|ask] [--dry-run]
+                              Import servers from an export (only safe ssh
+                              options are accepted from a file)
   upssh lang [pt|en]          Show or change the language
   upssh menu-sync             Regenerate the Omarchy menu entries
   upssh vault-init            Create the vault and import pending passwords

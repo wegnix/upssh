@@ -2,7 +2,8 @@
 
 # upSSH installer — copies the command and the Omarchy bar plugin into place,
 # enables the widget and syncs the menu. Safe to re-run: it upgrades over an
-# existing install and never touches ~/.config/upssh (your servers and vault).
+# existing install and never touches your servers or vault in ~/.config/upssh
+# (it only creates that folder, mode 700, when it does not exist yet).
 
 set -uo pipefail
 
@@ -22,7 +23,7 @@ echo
 
 # ------------------------------------------------------------- dependências
 missing=()
-for c in bash jq gum ssh gpg python3 column; do
+for c in bash jq gum ssh gpg python3 column flock; do
   command -v "$c" >/dev/null 2>&1 || missing+=("$c")
 done
 if ((${#missing[@]})); then
@@ -44,6 +45,23 @@ fi
 command -v omarchy-shell >/dev/null 2>&1 || {
   warn "omarchy-shell not found — installing the command only, without the bar widget."
   NO_SHELL=1
+}
+
+# Quem instalou com `omarchy plugin add` tem na pasta do plugin um clone git
+# gerido pelo Omarchy. Copiar ficheiros por cima sujava esse clone e partia o
+# `omarchy plugin update`; nesse caso é esse o caminho de actualização.
+SELF_INSTALL=""
+if [[ $(readlink -f "$SRC") == "$(readlink -f "$PLUGIN_DIR" 2>/dev/null)" ]]; then
+  SELF_INSTALL=1
+elif [[ -d $PLUGIN_DIR/.git ]]; then
+  fail "$PLUGIN_DIR is a git clone managed by 'omarchy plugin add'."
+  info "Update it with:  omarchy plugin update $PLUGIN_ID"
+  info "or run this installer from that folder:  $PLUGIN_DIR/install.sh"
+  exit 1
+fi
+
+put() {
+  install -Dm"$1" "$2" "$3" || { fail "Could not write $3 — installation stopped."; exit 1; }
 }
 
 # -------------------------------------------------------------------- ficheiros
@@ -69,21 +87,27 @@ if [[ -e $BIN_DIR/upssh || -L $BIN_DIR/upssh ]] && ! owns_upssh "$BIN_DIR/upssh"
   info "  $PLUGIN_DIR/bin/upssh"
   info "  $PLUGIN_DIR/bin/upssh link --name upssh-plugin"
 else
-  install -Dm755 "$SRC/bin/upssh" "$BIN_DIR/upssh"
+  put 755 "$SRC/bin/upssh" "$BIN_DIR/upssh"
   info "command   → $BIN_DIR/upssh"
 fi
 
 if [[ -z ${NO_SHELL:-} ]]; then
-  mkdir -p "$PLUGIN_DIR"
-  install -Dm644 "$SRC/manifest.json" "$PLUGIN_DIR/manifest.json"
-  install -Dm644 "$SRC/UpsshPanel.qml" "$PLUGIN_DIR/UpsshPanel.qml"
-  install -Dm755 "$SRC/bin/upssh" "$PLUGIN_DIR/bin/upssh"
-  info "bar plugin → $PLUGIN_DIR"
+  if [[ -n $SELF_INSTALL ]]; then
+    info "bar plugin → $PLUGIN_DIR (already in place)"
+  else
+    put 644 "$SRC/manifest.json" "$PLUGIN_DIR/manifest.json"
+    put 644 "$SRC/UpsshPanel.qml" "$PLUGIN_DIR/UpsshPanel.qml"
+    put 755 "$SRC/bin/upssh" "$PLUGIN_DIR/bin/upssh"
+    info "bar plugin → $PLUGIN_DIR"
+  fi
 fi
 
-mkdir -p "$DATA_DIR"
-chmod 700 "$DATA_DIR"
-info "data      → $DATA_DIR (untouched if it already existed)"
+if [[ -d $DATA_DIR ]]; then
+  info "data      → $DATA_DIR (existing, left as is)"
+else
+  mkdir -m 700 -p "$DATA_DIR" || { fail "Could not create $DATA_DIR"; exit 1; }
+  info "data      → $DATA_DIR (created, mode 700)"
+fi
 
 case ":$PATH:" in
 *":$BIN_DIR:"*) ;;
@@ -92,10 +116,13 @@ esac
 
 UPSSH_CMD="$BIN_DIR/upssh"
 [[ -n ${LINK_SKIPPED:-} ]] && UPSSH_CMD="$PLUGIN_DIR/bin/upssh"
+# Sem shell do Omarchy e com um `upssh` alheio no PATH não há cópia nossa
+# para correr: o idioma e o menu ficam para quando houver.
+[[ -x $UPSSH_CMD ]] || UPSSH_CMD=""
 
 # --------------------------------------------------------------------- idioma
 echo
-if [[ -t 0 ]]; then
+if [[ -t 0 && -n $UPSSH_CMD ]]; then
   read -rp "  Language / Idioma — [e]nglish or [p]ortuguês? (e/p) " answer
   case "${answer,,}" in
   p*) "$UPSSH_CMD" lang pt >/dev/null && info "Language set to Portuguese." ;;
@@ -105,7 +132,9 @@ if [[ -t 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------- shell
-if [[ -z ${NO_SHELL:-} ]]; then
+# UPSSH_NO_SHELL=1 salta os comandos `omarchy` (útil para testar o instalador
+# num HOME temporário sem mexer no shell que está a correr).
+if [[ -z ${NO_SHELL:-} && -z ${UPSSH_NO_SHELL:-} ]]; then
   echo
   omarchy-shell shell rescanPlugins >/dev/null 2>&1
   sleep 1
@@ -120,14 +149,23 @@ if [[ -z ${NO_SHELL:-} ]]; then
   omarchy restart shell >/dev/null 2>&1 || true
 fi
 
-"$UPSSH_CMD" menu-sync >/dev/null 2>&1 && info "Omarchy menu synced."
+if [[ -n $UPSSH_CMD ]]; then
+  if "$UPSSH_CMD" menu-sync >/dev/null; then
+    info "Omarchy menu synced."
+  else
+    warn "The Omarchy menu was not updated (see the message above)."
+  fi
+fi
 
 echo
 bold "Done."
-if [[ -n ${LINK_SKIPPED:-} ]]; then
+if [[ -z $UPSSH_CMD ]]; then
+  info "Nothing runnable was installed: without omarchy-shell there is no bar plugin,"
+  info "and $BIN_DIR/upssh belongs to another program. Remove or rename it and re-run."
+elif [[ -n ${LINK_SKIPPED:-} ]]; then
   info "Click the upSSH icon in the bar, or run $PLUGIN_DIR/bin/upssh for the terminal UI."
 else
   info "Run 'upssh' for the terminal UI, or click the upSSH icon in the bar."
 fi
-info "Super → type 'ssh' opens the menu with your servers."
+[[ -n $UPSSH_CMD ]] && info "Super → type 'ssh' opens the menu with your servers."
 echo

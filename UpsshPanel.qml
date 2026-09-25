@@ -17,8 +17,8 @@ import qs.Ui as Ui
 // menu do Omarchy sincronizado.
 Panel {
   id: root
-  moduleName: "wesley.upssh"
-  ipcTarget: "upssh"
+  moduleName: "io.github.wegnix.upssh"
+  ipcTarget: "io.github.wegnix.upssh"
   manageIpc: true
 
   // O Panel base é um Item sem tamanho próprio: sem isto o botão da barra
@@ -63,6 +63,19 @@ Panel {
   // ida ao diálogo para o reabrir depois sem apagar o que já foi preenchido.
   property bool dialogPending: false
 
+  // O caminho de exportação veio do diálogo, que já perguntou antes de
+  // substituir um ficheiro; escrito à mão, o comando recusa substituir.
+  property bool exportPathConfirmed: false
+
+  // Só depois de saber qual `upssh` usar (o do plugin ou o do PATH) é que se
+  // corre algum; antes disso um `upssh` alheio no PATH podia ser chamado.
+  property bool probed: false
+  property bool reloadPending: false
+
+  // O zenity é opcional; sem ele os botões "Procurar…" nem aparecem (um
+  // Process que não arranca não emite exited e deixava o painel preso).
+  property bool hasZenity: false
+
 
   // ------------------------------------------------------------- traduções
   // O idioma vem de `upssh lang`, para o painel e a linha de comandos
@@ -74,7 +87,7 @@ Panel {
   // caminho cobre os dois, preferindo sempre o que veio com o plugin.
   readonly property string pluginDir: {
     var d = String(Qt.resolvedUrl("."))
-    return d.indexOf("file://") === 0 ? d.substring(7) : d
+    return decodeURIComponent(d.indexOf("file://") === 0 ? d.substring(7) : d)
   }
   readonly property string cmd: bundled ? pluginDir + "bin/upssh" : "upssh"
   property bool bundled: false
@@ -140,6 +153,10 @@ Panel {
     pCopy: "Importar como cópia",
     doImport: "Importar",
     importing: "A importar…",
+    pickImportTitle: "upSSH — importar servidores",
+    pickExportTitle: "upSSH — guardar exportação",
+    filterExports: "Exportações do upSSH",
+    filterAll: "Todos os ficheiros",
     browse: "Procurar…",
     syncTip: "Sincronizar o menu do Omarchy",
     masterTip: "Alterar a senha mestra do cofre",
@@ -238,6 +255,10 @@ Panel {
     pCopy: "Import as a copy",
     doImport: "Import",
     importing: "Importing…",
+    pickImportTitle: "upSSH — import servers",
+    pickExportTitle: "upSSH — save export",
+    filterExports: "upSSH exports",
+    filterAll: "All files",
     browse: "Browse…",
     syncTip: "Sync the Omarchy menu",
     masterTip: "Change the vault master password",
@@ -349,8 +370,12 @@ Panel {
     root.statusIsError = !!isError
   }
 
+  // Um pedido que chega com uma leitura em curso fica marcado e corre a
+  // seguir, para a lista nunca ficar com o estado de antes de gravar.
   function refresh() {
-    if (!loadProc.running) loadProc.running = true
+    if (!probed) return
+    if (loadProc.running) { reloadPending = true; return }
+    loadProc.running = true
   }
 
   function moveCursor(delta) {
@@ -373,7 +398,10 @@ Panel {
     root.close()
   }
 
+  // Enquanto um comando corre, o ecrã não muda: o resultado dele aplica-se
+  // ao formulário que o lançou, nunca a outro aberto entretanto.
   function openForm(row) {
+    if (busy) return
     armedDelete = ""
     setStatus("", false)
     if (row) {
@@ -402,12 +430,14 @@ Panel {
     view = "form"
   }
 
-  function closeForm() {
+  // keepStatus: fechar depois de gravar mantém a mensagem de sucesso.
+  function closeForm(keepStatus) {
+    if (busy) return
     view = "list"
     fPassword = ""
     exportPass = ""
     importPass = ""
-    setStatus("", false)
+    if (!keepStatus) setStatus("", false)
   }
 
   function effectiveGroup() {
@@ -415,6 +445,7 @@ Panel {
   }
 
   function saveForm() {
+    if (busy) return
     if (fName.trim() === "") { setStatus(root.tr.needName, true); return }
     if (fHost.trim() === "") { setStatus(root.tr.needHost, true); return }
     if (fUser.trim() === "") { setStatus(root.tr.needUser, true); return }
@@ -440,7 +471,7 @@ Panel {
   }
 
   function requestDelete(row) {
-    if (!row) return
+    if (!row || busy) return
     if (armedDelete !== String(row.id)) {
       armedDelete = String(row.id)
       setStatus(root.tr.armRemove + row.name, true)
@@ -457,6 +488,7 @@ Panel {
 
   // Alterna pt/en e grava a escolha, para a TUI e o menu irem atrás.
   function toggleLang() {
+    if (busy || langSetProc.running) return
     var next = lang === "pt" ? "en" : "pt"
     langSetProc.command = [root.cmd, "lang", next]
     langSetProc.running = true
@@ -468,14 +500,16 @@ Panel {
   }
 
   function defaultExportPath() {
-    var stamp = Qt.formatDateTime(new Date(), "yyyyMMdd-hhmm")
+    var stamp = Qt.formatDateTime(new Date(), "yyyyMMdd-hhmmss")
     return Quickshell.env("HOME") + "/upssh-" + stamp + (exportWithSecrets ? ".gpg" : ".json")
   }
 
   function openExport() {
+    if (busy) return
     exportWithSecrets = false
     exportPass = ""
     exportPath = defaultExportPath()
+    exportPathConfirmed = false
     setStatus("", false)
     view = "export"
   }
@@ -485,34 +519,43 @@ Panel {
   function retargetExport() {
     var want = exportWithSecrets ? ".gpg" : ".json"
     var other = exportWithSecrets ? ".json" : ".gpg"
-    if (exportPath.endsWith(other)) exportPath = exportPath.slice(0, -other.length) + want
+    if (exportPath.endsWith(other)) {
+      exportPath = exportPath.slice(0, -other.length) + want
+      // Outro nome, que o diálogo nunca confirmou.
+      exportPathConfirmed = false
+    }
   }
 
   function runExport() {
+    if (busy) return
     if (exportWithSecrets && exportPass.trim() === "") {
       setStatus(root.tr.needFilePass, true)
       return
     }
+    if (exportPath.trim() === "") {
+      setStatus(root.tr.needDest, true)
+      return
+    }
     root.busy = true
-    setStatus("A exportar…", false)
+    setStatus(root.tr.exporting, false)
     exportProc.collected = ""
     // A senha do ficheiro segue por stdin; o script lê-a de lá quando o
     // pedido não tem terminal, em vez de abrir um pinentry.
     exportProc.secret = exportWithSecrets ? exportPass : ""
-    if (exportPath.trim() === "") {
-      setStatus(root.tr.needDest, true)
-      root.busy = false
-      return
-    }
-    exportProc.command = exportWithSecrets
-      ? [root.cmd, "export", "--com-senhas", "--stdin-pass", exportPath.trim()]
-      : [root.cmd, "export", exportPath.trim()]
+    var cmd = [root.cmd, "export"]
+    if (exportWithSecrets) cmd.push("--com-senhas", "--stdin-pass")
+    // O diálogo só confirmou este nome exacto; se o comando tiver de lhe
+    // acrescentar a extensão, é outro ficheiro e não pode ser substituído.
+    if (exportPathConfirmed && /\.(json|gpg)$/.test(exportPath.trim())) cmd.push("--overwrite")
+    cmd.push(exportPath.trim())
+    exportProc.command = cmd
     exportProc.running = true
   }
 
   // Diálogo GTK do zenity: o selector do Omarchy depende de IPC com este
   // mesmo processo e não responde quando é o shell a invocá-lo.
   function openImport() {
+    if (busy) return
     importFile = ""
     importPass = ""
     importConflicts = []
@@ -524,6 +567,7 @@ Panel {
   }
 
   function browseImport() {
+    if (busy || !hasZenity) return
     setStatus(root.tr.choosingFile, false)
     dialogPending = true
     pickProc.collected = ""
@@ -531,12 +575,13 @@ Panel {
   }
 
   function browseExport() {
+    if (busy || !hasZenity) return
     setStatus(root.tr.choosingDest, false)
     dialogPending = true
     savePickProc.collected = ""
     savePickProc.command = ["zenity", "--file-selection", "--save",
                             "--confirm-overwrite",
-                            "--title=upSSH — guardar exportação",
+                            "--title=" + root.tr.pickExportTitle,
                             "--filename=" + exportPath]
     savePickProc.running = true
   }
@@ -549,10 +594,23 @@ Panel {
     dialogPending = false
   }
 
+  // Mostra que servidores do ficheiro já existem, perguntando ao próprio
+  // `upssh import --dry-run`. Um .gpg precisa da senha, por isso fica de
+  // fora (com --stdin-pass e stdin fechado nunca abre um pinentry).
+  function checkConflicts() {
+    importConflicts = []
+    var file = importFile.trim()
+    if (file === "" || file.endsWith(".gpg")) return
+    if (conflictProc.running) { conflictTimer.restart(); return }
+    conflictProc.collected = []
+    conflictProc.command = [root.cmd, "import", file, "--dry-run", "--stdin-pass"]
+    conflictProc.running = true
+  }
+
   function runImport() {
-    if (importFile === "") return
+    if (importFile === "" || busy) return
     root.busy = true
-    setStatus("A importar…", false)
+    setStatus(root.tr.importing, false)
     importProc.secret = importPass
     importProc.command = [root.cmd, "import", importFile,
                           "--conflito", importPolicy, "--stdin-pass"]
@@ -560,6 +618,7 @@ Panel {
   }
 
   function syncMenu() {
+    if (busy) return
     root.busy = true
     setStatus(root.tr.syncing, false)
     syncProc.running = true
@@ -588,9 +647,17 @@ Panel {
     command: ["test", "-x", root.pluginDir + "bin/upssh"]
     onExited: function (code) {
       root.bundled = code === 0
+      root.probed = true
       langProc.running = true
+      zenityProbe.running = true
       root.refresh()
     }
+  }
+
+  Process {
+    id: zenityProbe
+    command: ["sh", "-c", "command -v zenity >/dev/null"]
+    onExited: function (code) { root.hasZenity = code === 0 }
   }
 
   Process {
@@ -609,19 +676,62 @@ Panel {
     onExited: root.refresh()
   }
 
+  // O `upssh json` já limita o ficheiro a 1 MiB e filtra entradas mal
+  // formadas; aqui volta-se a verificar, porque é isto que alimenta a lista.
+  readonly property int maxJson: 1048576
+
+  function sanitizeServers(list) {
+    var out = []
+    if (!Array.isArray(list)) return out
+    for (var i = 0; i < list.length && out.length < 5000; i++) {
+      var s = list[i]
+      if (!s || typeof s !== "object" || typeof s.id !== "string" || s.id === "") continue
+      out.push({
+        id: s.id,
+        name: String(s.name || ""),
+        group: String(s.group || ""),
+        host: String(s.host || ""),
+        port: String(s.port || 22),
+        user: String(s.user || ""),
+        auth: s.auth === "password" ? "password" : "key",
+        identity: String(s.identity || ""),
+        options: String(s.options || "")
+      })
+    }
+    return out
+  }
+
   Process {
     id: loadProc
     command: [root.cmd, "json"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        var raw = String(text || "")
+        if (raw.length > root.maxJson) {
+          root.servers = []
+          root.setStatus(root.tr.readFail, true)
+          return
+        }
         try {
-          var data = JSON.parse(String(text || "{}"))
-          root.servers = data.servers || []
+          var data = JSON.parse(raw === "" ? "{}" : raw)
+          root.servers = root.sanitizeServers(data && data.servers)
         } catch (e) {
           root.servers = []
           root.setStatus(root.tr.readFail, true)
         }
+      }
+    }
+    onExited: function (code) {
+      // Ficheiro corrompido ou grande demais: o `upssh json` recusa, e isso
+      // não pode aparecer como "ainda não há servidores".
+      if (code !== 0) {
+        root.servers = []
+        root.setStatus(root.tr.readFail, true)
+      }
+      if (root.reloadPending) {
+        root.reloadPending = false
+        loadProc.running = true
       }
     }
   }
@@ -642,6 +752,9 @@ Panel {
         return
       }
       var id = saveProc.collected.trim()
+      // A partir daqui o servidor existe: se a senha falhar e o utilizador
+      // voltar a gravar, é uma edição deste id e não um duplicado.
+      if (id !== "") root.fId = id
       if (saveProc.pendingPassword !== "" && id !== "") {
         // A senha vai por stdin; nunca por argv, que é legível no `ps`.
         pwProc.secret = saveProc.pendingPassword
@@ -652,7 +765,7 @@ Panel {
         return
       }
       root.setStatus(root.tr.saved, false)
-      root.closeForm()
+      root.closeForm(true)
       root.refresh()
     }
   }
@@ -664,7 +777,6 @@ Panel {
     onStarted: {
       write(secret + "\n")
       secret = ""
-      stdinEnabled = false
     }
     stderr: StdioCollector {
       waitForEnd: true
@@ -674,7 +786,7 @@ Panel {
       root.busy = false
       if (code === 0) {
         root.setStatus(root.tr.savedVault, false)
-        root.closeForm()
+        root.closeForm(true)
       } else if (!root.statusIsError) {
         root.setStatus(root.tr.savePassFail, true)
       }
@@ -696,10 +808,11 @@ Panel {
     property string secret: ""
     property string collected: ""
     stdinEnabled: true
+    // Escreve sempre uma linha, mesmo vazia: o script lê exactamente uma e,
+    // sem ela, ficaria à espera para sempre com o painel bloqueado.
     onStarted: {
-      if (secret !== "") write(secret + "\n")
+      write(secret + "\n")
       secret = ""
-      stdinEnabled = false
     }
     stdout: SplitParser { onRead: function (line) { exportProc.collected = line } }
     stderr: StdioCollector {
@@ -710,6 +823,7 @@ Panel {
       root.busy = false
       if (code === 0) {
         root.setStatus(root.tr.exportedTo + exportProc.collected.trim(), false)
+        root.exportPass = ""
         root.view = "list"
       } else if (!root.statusIsError) {
         root.setStatus(root.tr.exportFail, true)
@@ -725,6 +839,7 @@ Panel {
       var file = savePickProc.collected.trim()
       if (code === 0 && file !== "") {
         root.exportPath = file
+        root.exportPathConfirmed = true
         root.setStatus(root.tr.destIs + file, false)
       } else {
         root.setStatus(root.tr.destUnchanged, false)
@@ -737,10 +852,10 @@ Panel {
     id: pickProc
     property string collected: ""
     command: ["zenity", "--file-selection",
-              "--title=upSSH — importar servidores",
+              "--title=" + root.tr.pickImportTitle,
               "--filename=" + Quickshell.env("HOME") + "/",
-              "--file-filter=Exportações do upSSH | *.json *.gpg",
-              "--file-filter=Todos os ficheiros | *"]
+              "--file-filter=" + root.tr.filterExports + " | *.json *.gpg",
+              "--file-filter=" + root.tr.filterAll + " | *"]
     stdout: SplitParser { onRead: function (line) { pickProc.collected = line } }
     onExited: function (code) {
       var file = pickProc.collected.trim()
@@ -754,12 +869,7 @@ Panel {
       root.importPolicy = "manter"
       root.setStatus("", false)
       root.view = "import"
-      conflictProc.command = ["bash", "-c",
-        "jq -r '.servers[].id' " + Util.shellQuote(file) +
-        " 2>/dev/null | while read -r i; do jq -e --arg i \"$i\" '.servers[]|select(.id==$i)|.name' " +
-        Util.shellQuote(Quickshell.env("HOME") + "/.config/upssh/servers.json") + " 2>/dev/null; done"]
-      conflictProc.collected = []
-      conflictProc.running = true
+      root.checkConflicts()
       root.afterDialog()
     }
   }
@@ -772,21 +882,31 @@ Panel {
     property var collected: []
     stdout: SplitParser {
       onRead: function (line) {
-        var t = String(line).trim().replace(/^"|"$/g, "")
-        if (t !== "") conflictProc.collected = conflictProc.collected.concat([t])
+        var t = String(line).trim()
+        if (t !== "" && conflictProc.collected.length < 200)
+          conflictProc.collected = conflictProc.collected.concat([t])
       }
     }
     onExited: root.importConflicts = conflictProc.collected
+  }
+
+  // Um caminho escrito à mão também mostra os conflitos, depois de uma
+  // pausa na escrita.
+  Timer {
+    id: conflictTimer
+    interval: 500
+    onTriggered: root.checkConflicts()
   }
 
   Process {
     id: importProc
     property string secret: ""
     stdinEnabled: true
+    // Escreve sempre uma linha, mesmo vazia: o script lê exactamente uma e,
+    // sem ela, ficaria à espera para sempre com o painel bloqueado.
     onStarted: {
-      if (secret !== "") write(secret + "\n")
+      write(secret + "\n")
       secret = ""
-      stdinEnabled = false
     }
     stdout: SplitParser { onRead: function (line) { root.setStatus(String(line).trim(), false) } }
     stderr: StdioCollector {
@@ -796,7 +916,10 @@ Panel {
     onExited: function (code) {
       root.busy = false
       if (code !== 0 && !root.statusIsError) root.setStatus(root.tr.importFail, true)
-      if (code === 0) root.view = "list"
+      if (code === 0) {
+        root.importPass = ""
+        root.view = "list"
+      }
       root.refresh()
     }
   }
@@ -821,14 +944,18 @@ Panel {
   onOpenedChanged: {
     if (opened) {
       if (dialogPending) return
+      // Com um comando a correr, o ecrã fica onde está para receber o
+      // resultado dele.
+      if (busy) return
       view = "list"
       filterText = ""
+      search.text = ""
       cursorIndex = 0
       cursorActive = false
       armedDelete = ""
       setStatus("", false)
       refresh()
-      if (!langProc.running) langProc.running = true
+      if (probed && !langProc.running) langProc.running = true
       // O contentHeight só assenta depois do layout e de o `upssh json`
       // voltar; repor antes disso não pega e a lista reabre onde ficou.
       topTimer.restart()
@@ -836,6 +963,12 @@ Panel {
     } else if (!dialogPending) {
       armedDelete = ""
       armTimer.stop()
+      // Fechar o painel esquece as senhas escritas e não usadas.
+      if (!busy) {
+        fPassword = ""
+        exportPass = ""
+        importPass = ""
+      }
     }
   }
 
@@ -1193,10 +1326,11 @@ Panel {
               label: root.tr.lSaveTo
               value: root.exportPath
               placeholder: root.tr.phSaveTo
-              onEdited: function (v) { root.exportPath = v }
+              onEdited: function (v) { root.exportPath = v; root.exportPathConfirmed = false }
             }
 
             Ui.Button {
+              visible: root.hasZenity
               text: root.tr.browseSave
               iconText: "\uf07c"
               foreground: root.dim
@@ -1242,7 +1376,7 @@ Panel {
               label: root.tr.lImportFile
               value: root.importFile
               placeholder: root.tr.phImportFile
-              onEdited: function (v) { root.importFile = v }
+              onEdited: function (v) { root.importFile = v; conflictTimer.restart() }
             }
 
             Field {
@@ -1296,6 +1430,7 @@ Panel {
               }
 
               Ui.Button {
+                visible: root.hasZenity
                 text: root.tr.browse
                 foreground: root.dim
                 accent: root.accent
