@@ -68,6 +68,16 @@ Panel {
   // O idioma vem de `upssh lang`, para o painel e a linha de comandos
   // falarem sempre o mesmo.
   property string lang: "pt"
+
+  // Quem instala com `omarchy plugin add` recebe o comando dentro da pasta do
+  // plugin, fora do PATH; quem usa o install.sh tem-no em ~/.local/bin. Este
+  // caminho cobre os dois, preferindo sempre o que veio com o plugin.
+  readonly property string pluginDir: {
+    var d = String(Qt.resolvedUrl("."))
+    return d.indexOf("file://") === 0 ? d.substring(7) : d
+  }
+  readonly property string cmd: bundled ? pluginDir + "bin/upssh" : "upssh"
+  property bool bundled: false
   readonly property var tr: lang === "en" ? enStrings : ptStrings
 
   readonly property var ptStrings: ({
@@ -359,7 +369,7 @@ Panel {
     if (!row || !bar) return
     // O `bar` injectado expõe run() mas não shellQuote() — essa vive em
     // qs.Commons.Util, e chamá-la no objecto errado abortava a ligação toda.
-    bar.run("omarchy-launch-tui --app-id=org.upssh upssh connect " + Util.shellQuote(String(row.id)))
+    bar.run("omarchy-launch-tui --app-id=org.upssh " + Util.shellQuote(root.cmd) + " connect " + Util.shellQuote(String(row.id)))
     root.close()
   }
 
@@ -416,7 +426,7 @@ Panel {
     setStatus(root.tr.saving, false)
     saveProc.pendingPassword = fAuth === "password" ? fPassword : ""
     saveProc.collected = ""
-    saveProc.command = ["upssh", "save",
+    saveProc.command = [root.cmd, "save",
       "--id", fId,
       "--name", fName.trim(),
       "--group", effectiveGroup(),
@@ -441,20 +451,20 @@ Panel {
     armTimer.stop()
     root.busy = true
     setStatus(root.tr.removing, false)
-    deleteProc.command = ["upssh", "delete", String(row.id)]
+    deleteProc.command = [root.cmd, "delete", String(row.id)]
     deleteProc.running = true
   }
 
   // Alterna pt/en e grava a escolha, para a TUI e o menu irem atrás.
   function toggleLang() {
     var next = lang === "pt" ? "en" : "pt"
-    langSetProc.command = ["upssh", "lang", next]
+    langSetProc.command = [root.cmd, "lang", next]
     langSetProc.running = true
     lang = next
   }
 
   function changeMaster() {
-    if (bar) bar.run("upssh master")
+    if (bar) bar.run(Util.shellQuote(root.cmd) + " master")
   }
 
   function defaultExportPath() {
@@ -495,8 +505,8 @@ Panel {
       return
     }
     exportProc.command = exportWithSecrets
-      ? ["upssh", "export", "--com-senhas", "--stdin-pass", exportPath.trim()]
-      : ["upssh", "export", exportPath.trim()]
+      ? [root.cmd, "export", "--com-senhas", "--stdin-pass", exportPath.trim()]
+      : [root.cmd, "export", exportPath.trim()]
     exportProc.running = true
   }
 
@@ -544,7 +554,7 @@ Panel {
     root.busy = true
     setStatus("A importar…", false)
     importProc.secret = importPass
-    importProc.command = ["upssh", "import", importFile,
+    importProc.command = [root.cmd, "import", importFile,
                           "--conflito", importPolicy, "--stdin-pass"]
     importProc.running = true
   }
@@ -570,11 +580,22 @@ Panel {
 
   // ---------------------------------------------------------------- processos
   // Lido no arranque e a cada abertura: o idioma pode ter mudado pela TUI.
-  Component.onCompleted: langProc.running = true
+  Component.onCompleted: probeProc.running = true
+
+  // Uma leitura única no arranque decide qual dos dois caminhos usar.
+  Process {
+    id: probeProc
+    command: ["test", "-x", root.pluginDir + "bin/upssh"]
+    onExited: function (code) {
+      root.bundled = code === 0
+      langProc.running = true
+      root.refresh()
+    }
+  }
 
   Process {
     id: langProc
-    command: ["upssh", "lang"]
+    command: [root.cmd, "lang"]
     stdout: SplitParser {
       onRead: function (line) {
         var l = String(line).trim()
@@ -590,7 +611,7 @@ Panel {
 
   Process {
     id: loadProc
-    command: ["upssh", "json"]
+    command: [root.cmd, "json"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -625,7 +646,7 @@ Panel {
         // A senha vai por stdin; nunca por argv, que é legível no `ps`.
         pwProc.secret = saveProc.pendingPassword
         saveProc.pendingPassword = ""
-        pwProc.command = ["upssh", "set-password", id]
+        pwProc.command = [root.cmd, "set-password", id]
         root.busy = true
         pwProc.running = true
         return
@@ -782,7 +803,7 @@ Panel {
 
   Process {
     id: syncProc
-    command: ["upssh", "menu-sync"]
+    command: [root.cmd, "menu-sync"]
     onExited: function (code) {
       root.busy = false
       root.setStatus(code === 0 ? root.tr.synced : root.tr.syncFail, code !== 0)

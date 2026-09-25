@@ -6,6 +6,12 @@
 
 set -uo pipefail
 
+# Caminho absoluto deste script. As entradas geradas no menu do Omarchy
+# apontam para aqui, e não para "upssh", porque quem instala com
+# `omarchy plugin add` fica com o comando dentro da pasta do plugin e não no
+# PATH.
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+
 CONFIG_DIR="${UPSSH_DIR:-$HOME/.config/upssh}"
 SERVERS="$CONFIG_DIR/servers.json"
 SECRETS="$CONFIG_DIR/secrets.gpg"
@@ -808,14 +814,14 @@ menu_block() {
   printf '%s\n' "$BEGIN_MARK"
   printf '  "upssh": {"icon":"\\uf233","label":"upSSH","aliases":["ssh","servidores","acessos","remoto"],"description":"%s"},\n' "$(t menu_root_desc)"
 
-  jq -r '
+  jq -r --arg self "$SELF" '
     .servers | sort_by(.group, .name) | .[] |
     "  \"upssh." + .id + "\": " + ({
       icon: "\uf233",
       label: .name,
       description: (.group + " · " + .user + "@" + .host + ":" + (.port|tostring)),
       aliases: [.group, .host],
-      action: ("omarchy-launch-tui --app-id=org.upssh upssh connect " + .id)
+      action: ("omarchy-launch-tui --app-id=org.upssh " + $self + " connect " + .id)
     } | tojson) + ","' "$SERVERS"
 
   printf '  "upssh.grupos": {"icon":"\\uf0c0","label":"%s","description":"%s"},\n' "$(t menu_bygroup)" "$(t menu_bygroup_desc)"
@@ -824,17 +830,17 @@ menu_block() {
     [[ -n $group ]] || continue
     slug=$(slugify "$group")
     printf '  "upssh.grupos.%s": {"icon":"\\uf0c0","label":%s},\n' "$slug" "$(jq -Rn --arg v "$group" '$v')"
-    jq -r --arg g "$group" --arg slug "$slug" '
+    jq -r --arg g "$group" --arg slug "$slug" --arg self "$SELF" '
       .servers | sort_by(.name) | .[] | select(.group == $g) |
       "  \"upssh.grupos." + $slug + "." + .id + "\": " + ({
         icon: "\uf233",
         label: .name,
         description: (.user + "@" + .host + ":" + (.port|tostring)),
-        action: ("omarchy-launch-tui --app-id=org.upssh upssh connect " + .id)
+        action: ("omarchy-launch-tui --app-id=org.upssh " + $self + " connect " + .id)
       } | tojson) + ","' "$SERVERS"
   done < <(groups_list)
 
-  printf '  "upssh.gerir": {"icon":"\\uf013","label":"%s","description":"%s","action":"omarchy-launch-tui --app-id=org.upssh upssh"},\n' "$(t menu_manage)" "$(t menu_manage_desc)"
+  printf '  "upssh.gerir": {"icon":"\\uf013","label":"%s","description":"%s","action":"omarchy-launch-tui --app-id=org.upssh %s"},\n' "$(t menu_manage)" "$(t menu_manage_desc)" "$SELF"
   printf '%s\n' "$END_MARK"
 }
 
@@ -1308,6 +1314,13 @@ group-rename)
   api_group_rename "$@"
   ;;
 has-password) api_has_password ;;
+link)
+  # Quem instalou pelo `omarchy plugin add` tem o comando dentro da pasta do
+  # plugin; isto põe-no ao alcance do terminal sem copiar nada.
+  mkdir -p "$HOME/.local/bin"
+  ln -sfn "$SELF" "$HOME/.local/bin/upssh"
+  printf '%s -> %s\n' "$HOME/.local/bin/upssh" "$SELF"
+  ;;
 lang)
   shift
   if [[ -n ${1:-} ]]; then set_lang "$1"; else printf '%s\n' "$UPSSH_LANG"; fi

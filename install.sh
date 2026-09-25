@@ -52,8 +52,9 @@ info "command   → $BIN_DIR/upssh"
 
 if [[ -z ${NO_SHELL:-} ]]; then
   mkdir -p "$PLUGIN_DIR"
-  install -Dm644 "$SRC/plugin/manifest.json" "$PLUGIN_DIR/manifest.json"
-  install -Dm644 "$SRC/plugin/UpsshPanel.qml" "$PLUGIN_DIR/UpsshPanel.qml"
+  install -Dm644 "$SRC/manifest.json" "$PLUGIN_DIR/manifest.json"
+  install -Dm644 "$SRC/UpsshPanel.qml" "$PLUGIN_DIR/UpsshPanel.qml"
+  install -Dm755 "$SRC/bin/upssh" "$PLUGIN_DIR/bin/upssh"
   info "bar plugin → $PLUGIN_DIR"
 fi
 

@@ -27,6 +27,19 @@ Available in **English** and **Portuguese**.
 
 ## Install
 
+From the Omarchy plugin manager:
+
+```bash
+omarchy plugin add https://github.com/wegnix/upssh.git --enable
+~/.config/omarchy/plugins/io.github.wegnix.upssh/bin/upssh link
+```
+
+The second line puts `upssh` on your `PATH` so the terminal UI works too. The
+bar widget and the Omarchy menu work without it — they call the copy that ships
+inside the plugin folder, by absolute path.
+
+Or clone and run the installer, which does both in one step:
+
 ```bash
 git clone https://github.com/wegnix/upssh.git
 cd upssh
@@ -65,7 +78,7 @@ upssh master                Change the vault master password
 
 ```
 ~/.local/bin/upssh                                command
-~/.config/omarchy/plugins/io.github.wegnix.upssh  bar widget
+~/.config/omarchy/plugins/io.github.wegnix.upssh  bar widget + bundled command
 ~/.config/upssh/servers.json                      servers, no passwords
 ~/.config/upssh/secrets.gpg                       passwords, AES-256
 ~/.config/upssh/config.json                       preferences (language)
