@@ -13,21 +13,21 @@ MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 
 info() { printf '  %s\n' "$*"; }
 
-# UPSSH_NO_SHELL=1 salta os comandos `omarchy` (útil para testar o script num
-# HOME temporário sem mexer no shell que está a correr).
+# UPSSH_NO_SHELL=1 skips the `omarchy` commands (useful for testing the
+# script in a temporary HOME without touching the running shell).
 have_omarchy() { [[ -z ${UPSSH_NO_SHELL:-} ]] && command -v omarchy >/dev/null 2>&1; }
 
-# Tira as entradas geradas do menu antes de o comando desaparecer. O ficheiro
-# é reescrito por inteiro (temporário na mesma pasta + rename, com o modo
-# original); um link de dotfiles é seguido até ao ficheiro real e mantido.
+# Removes the generated menu entries before the command goes away. The file
+# is rewritten in full (temp file in the same folder + rename, keeping the
+# original mode); a dotfiles link is followed to the real file and kept.
 MENU_CLEAN_PY='
 import os, re, sys, tempfile
 
 path = os.path.realpath(sys.argv[1])
 text = open(path, encoding="utf-8").read()
 lines = text.split("\n")
-# Só apaga blocos com abertura e fecho; um bloco partido deixa o ficheiro
-# intacto, para não levar as entradas do utilizador que vêm a seguir.
+# Only deletes blocks with both an opening and a closing marker; a broken
+# block leaves the file intact, so the user entries after it are not lost.
 kinds = [
     "begin" if l.strip().startswith("// >>> upssh") else "end"
     for l in lines
@@ -47,9 +47,9 @@ for line in lines:
     elif not skip:
         out.append(line)
 result = "\n".join(out)
-# Sem o bloco, um ficheiro que ficou só "{ }" não tem nada do utilizador e
-# sai — excepto se for um link (dotfiles): aí o ficheiro de destino é do
-# utilizador e fica, só sem as nossas entradas.
+# Without the block, a file left as just "{ }" holds nothing from the user
+# and is removed — unless it is a link (dotfiles): then the target file
+# belongs to the user and stays, just without our entries.
 if re.sub(r"\s", "", result) == "{}" and not os.path.islink(sys.argv[1]):
     os.unlink(path)
     sys.exit(6)
@@ -73,14 +73,14 @@ elif [[ -f $MENU ]]; then
   *) info "Could not update $MENU — file left untouched." ;;
   esac
 fi
-# Versões anteriores à 1.0.3 guardavam uma cópia do menu ao lado. Pode ter
-# entradas do utilizador, por isso não se apaga: só se avisa.
+# Versions before 1.0.3 kept a copy of the menu next to it. It may hold
+# user entries, so it is not deleted: we only warn about it.
 [[ -f $MENU.bak ]] && info "Note: $MENU.bak was left by an older upSSH version; delete it if you do not need it."
 
 have_omarchy && omarchy plugin disable "$PLUGIN_ID" >/dev/null 2>&1
 
-# A pasta do plugin é nossa por construção; o comando em ~/.local/bin pode
-# não ser, por isso só sai se provarmos que nos pertence.
+# The plugin folder is ours by construction; the command in ~/.local/bin may
+# not be, so it is only removed if we can prove it belongs to us.
 owns_upssh() {
   local path="$1" resolved
   [[ -e $path || -L $path ]] || return 1
@@ -88,8 +88,8 @@ owns_upssh() {
   case "$resolved" in
   "$PLUGIN_DIR"/*) return 0 ;;
   esac
-  # O marcador só existe a partir da 1.0.2; as versões anteriores são nossas
-  # na mesma e reconhecem-se por esta constante, que mais nada usa.
+  # The marker only exists from 1.0.2 on; earlier versions are still ours
+  # and are recognised by this constant, which nothing else uses.
   grep -qm1 -e "^# upssh-plugin-id: $PLUGIN_ID\$" -e '^EXPORT_MAGIC="upssh-export"$' "$resolved" 2>/dev/null
 }
 
@@ -102,9 +102,9 @@ if [[ -e $BIN || -L $BIN ]]; then
   fi
 fi
 
-# Links criados com `upssh link --name <nome>` apontam para a pasta do
-# plugin ou para o comando que este script acabou de remover; só esses
-# saem. Um link para um `upssh` alheio (que ficou) não é nosso.
+# Links created with `upssh link --name <name>` point to the plugin folder
+# or to the command this script just removed; only those are removed. A
+# link to a foreign `upssh` (which was kept) is not ours.
 for l in "$HOME"/.local/bin/*; do
   [[ -L $l && $l != "$BIN" ]] || continue
   target=$(readlink -f "$l" 2>/dev/null) || continue

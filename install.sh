@@ -21,7 +21,7 @@ fail() { printf '\033[31m  %s\033[0m\n' "$*" >&2; }
 bold "upSSH installer"
 echo
 
-# ------------------------------------------------------------- dependências
+# ------------------------------------------------------------- dependencies
 missing=()
 for c in bash jq gum ssh gpg python3 column flock; do
   command -v "$c" >/dev/null 2>&1 || missing+=("$c")
@@ -47,9 +47,9 @@ command -v omarchy-shell >/dev/null 2>&1 || {
   NO_SHELL=1
 }
 
-# Quem instalou com `omarchy plugin add` tem na pasta do plugin um clone git
-# gerido pelo Omarchy. Copiar ficheiros por cima sujava esse clone e partia o
-# `omarchy plugin update`; nesse caso é esse o caminho de actualização.
+# Installing with `omarchy plugin add` leaves a git clone managed by Omarchy
+# in the plugin folder. Copying files over it would dirty that clone and break
+# `omarchy plugin update`; in that case, that is the upgrade path.
 SELF_INSTALL=""
 if [[ $(readlink -f "$SRC") == "$(readlink -f "$PLUGIN_DIR" 2>/dev/null)" ]]; then
   SELF_INSTALL=1
@@ -64,9 +64,9 @@ put() {
   install -Dm"$1" "$2" "$3" || { fail "Could not write $3 — installation stopped."; exit 1; }
 }
 
-# -------------------------------------------------------------------- ficheiros
-# Nunca escrever por cima de um comando que não é nosso: um `upssh` alheio
-# em ~/.local/bin fica intacto e o widget continua a funcionar sem ele.
+# ------------------------------------------------------------------------ files
+# Never overwrite a command that is not ours: a foreign `upssh` in
+# ~/.local/bin is left intact and the widget keeps working without it.
 owns_upssh() {
   local path="$1" resolved
   [[ -e $path || -L $path ]] || return 1
@@ -74,8 +74,8 @@ owns_upssh() {
   case "$resolved" in
   "$PLUGIN_DIR"/*) return 0 ;;
   esac
-  # O marcador só existe a partir da 1.0.2; as versões anteriores são nossas
-  # na mesma e reconhecem-se por esta constante, que mais nada usa.
+  # The marker only exists from 1.0.2 on; earlier versions are still ours
+  # and are recognised by this constant, which nothing else uses.
   grep -qm1 -e "^# upssh-plugin-id: $PLUGIN_ID\$" -e '^EXPORT_MAGIC="upssh-export"$' "$resolved" 2>/dev/null
 }
 
@@ -116,11 +116,11 @@ esac
 
 UPSSH_CMD="$BIN_DIR/upssh"
 [[ -n ${LINK_SKIPPED:-} ]] && UPSSH_CMD="$PLUGIN_DIR/bin/upssh"
-# Sem shell do Omarchy e com um `upssh` alheio no PATH não há cópia nossa
-# para correr: o idioma e o menu ficam para quando houver.
+# Without the Omarchy shell and with a foreign `upssh` on the PATH there is no
+# copy of ours to run: language and menu wait until there is one.
 [[ -x $UPSSH_CMD ]] || UPSSH_CMD=""
 
-# --------------------------------------------------------------------- idioma
+# ------------------------------------------------------------------- language
 echo
 if [[ -t 0 && -n $UPSSH_CMD ]]; then
   read -rp "  Language / Idioma — [e]nglish or [p]ortuguês? (e/p) " answer
@@ -132,8 +132,8 @@ if [[ -t 0 && -n $UPSSH_CMD ]]; then
 fi
 
 # ---------------------------------------------------------------------- shell
-# UPSSH_NO_SHELL=1 salta os comandos `omarchy` (útil para testar o instalador
-# num HOME temporário sem mexer no shell que está a correr).
+# UPSSH_NO_SHELL=1 skips the `omarchy` commands (useful for testing the
+# installer in a temporary HOME without touching the running shell).
 if [[ -z ${NO_SHELL:-} && -z ${UPSSH_NO_SHELL:-} ]]; then
   echo
   omarchy-shell shell rescanPlugins >/dev/null 2>&1
@@ -144,8 +144,8 @@ if [[ -z ${NO_SHELL:-} && -z ${UPSSH_NO_SHELL:-} ]]; then
     warn "Could not enable the widget automatically."
     info "Run:  omarchy plugin enable $PLUGIN_ID"
   fi
-  # O qmlcache do Quickshell guarda o caminho anterior de um ficheiro .qml
-  # renomeado; um restart limpa-o e evita um falso "File name case mismatch".
+  # Quickshell's qmlcache keeps the old path of a renamed .qml file; a
+  # restart clears it and avoids a spurious "File name case mismatch".
   omarchy restart shell >/dev/null 2>&1 || true
 fi
 

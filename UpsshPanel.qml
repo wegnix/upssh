@@ -7,26 +7,26 @@ import qs.Commons
 import qs.Ui
 import qs.Ui as Ui
 
-// upSSH — um ícone na barra e um painel para ligar, cadastrar e editar
-// servidores. Toda a gestão acontece aqui; o terminal só é aberto para a
-// sessão SSH em si.
+// upSSH — an icon in the bar and a panel to connect to, add and edit
+// servers. All management happens here; a terminal is only opened for the
+// SSH session itself.
 //
-// Os dados vivem em ~/.config/upssh/servers.json e as senhas no cofre
-// GPG ao lado; o painel nunca lhes toca directamente — fala sempre com o
-// comando `upssh`, que é a única coisa que sabe cifrar e que mantém o
-// menu do Omarchy sincronizado.
+// Data lives in ~/.config/upssh/servers.json and passwords in the GPG
+// vault next to it; the panel never touches them directly — it always talks
+// to the `upssh` command, which is the only thing that knows how to encrypt
+// and which keeps the Omarchy menu in sync.
 Panel {
   id: root
   moduleName: "io.github.wegnix.upssh"
   ipcTarget: "io.github.wegnix.upssh"
   manageIpc: true
 
-  // O Panel base é um Item sem tamanho próprio: sem isto o botão da barra
-  // fica com 0px e o widget não aparece.
+  // The base Panel is an Item with no size of its own: without this the bar
+  // button ends up 0px wide and the widget does not show.
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  // ------------------------------------------------------------------ estado
+  // ------------------------------------------------------------------- state
   property var servers: []
   property string filterText: ""
   property string view: "list" // "list" | "form"
@@ -37,7 +37,7 @@ Panel {
   property bool cursorActive: false
   property bool busy: false
 
-  // campos do formulário
+  // form fields
   property string fId: ""
   property string fName: ""
   property string fGroup: ""
@@ -50,7 +50,7 @@ Panel {
   property string fOptions: ""
   property string fPassword: ""
 
-  // exportação / importação
+  // export / import
   property bool exportWithSecrets: false
   property string exportPass: ""
   property string exportPath: ""
@@ -59,32 +59,32 @@ Panel {
   property var importConflicts: []
   property string importPolicy: "manter"
 
-  // O diálogo de ficheiros rouba o foco e o painel fecha-se; isto marca a
-  // ida ao diálogo para o reabrir depois sem apagar o que já foi preenchido.
+  // The file dialog steals focus and the panel closes; this flags the trip
+  // to the dialog so it can be reopened without wiping what was filled in.
   property bool dialogPending: false
 
-  // O caminho de exportação veio do diálogo, que já perguntou antes de
-  // substituir um ficheiro; escrito à mão, o comando recusa substituir.
+  // The export path came from the dialog, which already asked before
+  // overwriting a file; when typed by hand, the command refuses to overwrite.
   property bool exportPathConfirmed: false
 
-  // Só depois de saber qual `upssh` usar (o do plugin ou o do PATH) é que se
-  // corre algum; antes disso um `upssh` alheio no PATH podia ser chamado.
+  // Nothing is run until we know which `upssh` to use (the plugin's or the
+  // PATH one); before that a foreign `upssh` on the PATH could be called.
   property bool probed: false
   property bool reloadPending: false
 
-  // O zenity é opcional; sem ele os botões "Procurar…" nem aparecem (um
-  // Process que não arranca não emite exited e deixava o painel preso).
+  // zenity is optional; without it the "Browse…" buttons do not even show (a
+  // Process that fails to start never emits exited and would leave the panel stuck).
   property bool hasZenity: false
 
 
-  // ------------------------------------------------------------- traduções
-  // O idioma vem de `upssh lang`, para o painel e a linha de comandos
-  // falarem sempre o mesmo.
+  // ---------------------------------------------------------- translations
+  // The language comes from `upssh lang`, so the panel and the command line
+  // always speak the same one.
   property string lang: "pt"
 
-  // Quem instala com `omarchy plugin add` recebe o comando dentro da pasta do
-  // plugin, fora do PATH; quem usa o install.sh tem-no em ~/.local/bin. Este
-  // caminho cobre os dois, preferindo sempre o que veio com o plugin.
+  // Installing with `omarchy plugin add` puts the command inside the plugin
+  // folder, off the PATH; install.sh puts it in ~/.local/bin. This path
+  // covers both, always preferring the one shipped with the plugin.
   readonly property string pluginDir: {
     var d = String(Qt.resolvedUrl("."))
     return decodeURIComponent(d.indexOf("file://") === 0 ? d.substring(7) : d)
@@ -304,7 +304,7 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property bool vertical: bar ? bar.vertical : false
 
-  readonly property string newGroupSentinel: "\u0000novo"
+  readonly property string newGroupSentinel: "\u0000new"
 
   readonly property var groupNames: {
     var seen = {}
@@ -319,8 +319,8 @@ Panel {
     return out
   }
 
-  // Uma linha corresponde se o texto aparecer no nome, grupo, host ou login,
-  // para "docker", "upnet" e "10.0.8" levarem todos ao mesmo sítio.
+  // A row matches if the text appears in the name, group, host or login,
+  // so "docker", "upnet" and "10.0.8" all lead to the same place.
   function matches(s) {
     var q = filterText.trim().toLowerCase()
     if (q === "") return true
@@ -364,14 +364,14 @@ Panel {
     return n
   }
 
-  // ------------------------------------------------------------------ acções
+  // ----------------------------------------------------------------- actions
   function setStatus(text, isError) {
     root.status = String(text || "")
     root.statusIsError = !!isError
   }
 
-  // Um pedido que chega com uma leitura em curso fica marcado e corre a
-  // seguir, para a lista nunca ficar com o estado de antes de gravar.
+  // A request that arrives while a read is in progress is flagged and runs
+  // afterwards, so the list never keeps the state from before saving.
   function refresh() {
     if (!probed) return
     if (loadProc.running) { reloadPending = true; return }
@@ -392,14 +392,14 @@ Panel {
 
   function connectRow(row) {
     if (!row || !bar) return
-    // O `bar` injectado expõe run() mas não shellQuote() — essa vive em
-    // qs.Commons.Util, e chamá-la no objecto errado abortava a ligação toda.
+    // The injected `bar` exposes run() but not shellQuote() — that lives in
+    // qs.Commons.Util, and calling it on the wrong object aborted the whole binding.
     bar.run("omarchy-launch-tui --app-id=org.upssh " + Util.shellQuote(root.cmd) + " connect " + Util.shellQuote(String(row.id)))
     root.close()
   }
 
-  // Enquanto um comando corre, o ecrã não muda: o resultado dele aplica-se
-  // ao formulário que o lançou, nunca a outro aberto entretanto.
+  // While a command runs, the screen does not change: its result applies
+  // to the form that launched it, never to another one opened meanwhile.
   function openForm(row) {
     if (busy) return
     armedDelete = ""
@@ -430,7 +430,7 @@ Panel {
     view = "form"
   }
 
-  // keepStatus: fechar depois de gravar mantém a mensagem de sucesso.
+  // keepStatus: closing after saving keeps the success message.
   function closeForm(keepStatus) {
     if (busy) return
     view = "list"
@@ -486,7 +486,7 @@ Panel {
     deleteProc.running = true
   }
 
-  // Alterna pt/en e grava a escolha, para a TUI e o menu irem atrás.
+  // Toggles pt/en and saves the choice, so the TUI and the menu follow it.
   function toggleLang() {
     if (busy || langSetProc.running) return
     var next = lang === "pt" ? "en" : "pt"
@@ -514,14 +514,14 @@ Panel {
     view = "export"
   }
 
-  // A extensão acompanha o formato enquanto o utilizador não escolher um
-  // caminho seu — depois disso manda o que ele escreveu.
+  // The extension follows the format until the user picks a path of
+  // their own — after that, what they typed wins.
   function retargetExport() {
     var want = exportWithSecrets ? ".gpg" : ".json"
     var other = exportWithSecrets ? ".json" : ".gpg"
     if (exportPath.endsWith(other)) {
       exportPath = exportPath.slice(0, -other.length) + want
-      // Outro nome, que o diálogo nunca confirmou.
+      // A different name, which the dialog never confirmed.
       exportPathConfirmed = false
     }
   }
@@ -539,21 +539,21 @@ Panel {
     root.busy = true
     setStatus(root.tr.exporting, false)
     exportProc.collected = ""
-    // A senha do ficheiro segue por stdin; o script lê-a de lá quando o
-    // pedido não tem terminal, em vez de abrir um pinentry.
+    // The file password goes via stdin; the script reads it from there when
+    // the request has no terminal, instead of opening a pinentry.
     exportProc.secret = exportWithSecrets ? exportPass : ""
     var cmd = [root.cmd, "export"]
     if (exportWithSecrets) cmd.push("--com-senhas", "--stdin-pass")
-    // O diálogo só confirmou este nome exacto; se o comando tiver de lhe
-    // acrescentar a extensão, é outro ficheiro e não pode ser substituído.
+    // The dialog only confirmed this exact name; if the command has to
+    // append the extension, it is a different file and must not be overwritten.
     if (exportPathConfirmed && /\.(json|gpg)$/.test(exportPath.trim())) cmd.push("--overwrite")
     cmd.push(exportPath.trim())
     exportProc.command = cmd
     exportProc.running = true
   }
 
-  // Diálogo GTK do zenity: o selector do Omarchy depende de IPC com este
-  // mesmo processo e não responde quando é o shell a invocá-lo.
+  // zenity GTK dialog: Omarchy's picker relies on IPC with this very
+  // process and does not respond when the shell is the one invoking it.
   function openImport() {
     if (busy) return
     importFile = ""
@@ -561,8 +561,8 @@ Panel {
     importConflicts = []
     importPolicy = "manter"
     setStatus("", false)
-    // Abre só o ecrã: o caminho escreve-se à mão e o diálogo de ficheiros
-    // fica atrás do botão "Procurar…", para quem o quiser.
+    // Opens the screen only: the path is typed by hand and the file dialog
+    // sits behind the "Browse…" button, for whoever wants it.
     view = "import"
   }
 
@@ -586,17 +586,17 @@ Panel {
     savePickProc.running = true
   }
 
-  // Volta a mostrar o painel depois do diálogo, com o que já lá estava.
+  // Shows the panel again after the dialog, with what was already there.
   function afterDialog() {
-    // A ordem importa: open() dispara onOpenedChanged na hora, e é a flag
-    // ainda ligada que impede esse handler de limpar o formulário.
+    // Order matters: open() fires onOpenedChanged immediately, and it is the flag,
+    // still set, that stops that handler from clearing the form.
     if (!opened) open()
     dialogPending = false
   }
 
-  // Mostra que servidores do ficheiro já existem, perguntando ao próprio
-  // `upssh import --dry-run`. Um .gpg precisa da senha, por isso fica de
-  // fora (com --stdin-pass e stdin fechado nunca abre um pinentry).
+  // Shows which servers in the file already exist, by asking
+  // `upssh import --dry-run` itself. A .gpg needs the password, so it is left
+  // out (with --stdin-pass and stdin closed it never opens a pinentry).
   function checkConflicts() {
     importConflicts = []
     var file = importFile.trim()
@@ -637,11 +637,11 @@ Panel {
     onTriggered: { root.armedDelete = ""; root.setStatus("", false) }
   }
 
-  // ---------------------------------------------------------------- processos
-  // Lido no arranque e a cada abertura: o idioma pode ter mudado pela TUI.
+  // ---------------------------------------------------------------- processes
+  // Read at startup and on every open: the language may have changed via the TUI.
   Component.onCompleted: probeProc.running = true
 
-  // Uma leitura única no arranque decide qual dos dois caminhos usar.
+  // A single read at startup decides which of the two paths to use.
   Process {
     id: probeProc
     command: ["test", "-x", root.pluginDir + "bin/upssh"]
@@ -676,8 +676,8 @@ Panel {
     onExited: root.refresh()
   }
 
-  // O `upssh json` já limita o ficheiro a 1 MiB e filtra entradas mal
-  // formadas; aqui volta-se a verificar, porque é isto que alimenta a lista.
+  // `upssh json` already caps the file at 1 MiB and filters out malformed
+  // entries; it is checked again here because this is what feeds the list.
   readonly property int maxJson: 1048576
 
   function sanitizeServers(list) {
@@ -723,8 +723,8 @@ Panel {
       }
     }
     onExited: function (code) {
-      // Ficheiro corrompido ou grande demais: o `upssh json` recusa, e isso
-      // não pode aparecer como "ainda não há servidores".
+      // Corrupt or oversized file: `upssh json` refuses it, and that
+      // must not show up as "no servers yet".
       if (code !== 0) {
         root.servers = []
         root.setStatus(root.tr.readFail, true)
@@ -752,11 +752,11 @@ Panel {
         return
       }
       var id = saveProc.collected.trim()
-      // A partir daqui o servidor existe: se a senha falhar e o utilizador
-      // voltar a gravar, é uma edição deste id e não um duplicado.
+      // From here on the server exists: if the password fails and the user
+      // saves again, it is an edit of this id and not a duplicate.
       if (id !== "") root.fId = id
       if (saveProc.pendingPassword !== "" && id !== "") {
-        // A senha vai por stdin; nunca por argv, que é legível no `ps`.
+        // The password goes via stdin; never via argv, which is readable in `ps`.
         pwProc.secret = saveProc.pendingPassword
         saveProc.pendingPassword = ""
         pwProc.command = [root.cmd, "set-password", id]
@@ -808,8 +808,8 @@ Panel {
     property string secret: ""
     property string collected: ""
     stdinEnabled: true
-    // Escreve sempre uma linha, mesmo vazia: o script lê exactamente uma e,
-    // sem ela, ficaria à espera para sempre com o painel bloqueado.
+    // Always write a line, even an empty one: the script reads exactly one and,
+    // without it, would wait forever with the panel blocked.
     onStarted: {
       write(secret + "\n")
       secret = ""
@@ -874,9 +874,9 @@ Panel {
     }
   }
 
-  // Um .gpg não se deixa inspeccionar sem senha, por isso a lista de
-  // conflitos só aparece para ficheiros em claro; nos cifrados a escolha
-  // aplica-se às cegas, como o utilizador a definir.
+  // A .gpg cannot be inspected without its password, so the conflict list
+  // only appears for plaintext files; for encrypted ones the choice is
+  // applied blind, as the user sets it.
   Process {
     id: conflictProc
     property var collected: []
@@ -890,8 +890,8 @@ Panel {
     onExited: root.importConflicts = conflictProc.collected
   }
 
-  // Um caminho escrito à mão também mostra os conflitos, depois de uma
-  // pausa na escrita.
+  // A hand-typed path also shows the conflicts, after a
+  // pause in typing.
   Timer {
     id: conflictTimer
     interval: 500
@@ -902,8 +902,8 @@ Panel {
     id: importProc
     property string secret: ""
     stdinEnabled: true
-    // Escreve sempre uma linha, mesmo vazia: o script lê exactamente uma e,
-    // sem ela, ficaria à espera para sempre com o painel bloqueado.
+    // Always write a line, even an empty one: the script reads exactly one and,
+    // without it, would wait forever with the panel blocked.
     onStarted: {
       write(secret + "\n")
       secret = ""
@@ -944,8 +944,8 @@ Panel {
   onOpenedChanged: {
     if (opened) {
       if (dialogPending) return
-      // Com um comando a correr, o ecrã fica onde está para receber o
-      // resultado dele.
+      // With a command running, the screen stays where it is to receive
+      // its result.
       if (busy) return
       view = "list"
       filterText = ""
@@ -956,14 +956,14 @@ Panel {
       setStatus("", false)
       refresh()
       if (probed && !langProc.running) langProc.running = true
-      // O contentHeight só assenta depois do layout e de o `upssh json`
-      // voltar; repor antes disso não pega e a lista reabre onde ficou.
+      // contentHeight only settles after layout and after `upssh json`
+      // returns; resetting before that does not stick and the list reopens where it was.
       topTimer.restart()
       Qt.callLater(function () { keyCatcher.forceActiveFocus() })
     } else if (!dialogPending) {
       armedDelete = ""
       armTimer.stop()
-      // Fechar o painel esquece as senhas escritas e não usadas.
+      // Closing the panel forgets passwords that were typed and not used.
       if (!busy) {
         fPassword = ""
         exportPass = ""
@@ -972,7 +972,7 @@ Panel {
     }
   }
 
-  // ------------------------------------------------------------ ícone da barra
+  // ------------------------------------------------------------------ bar icon
   WidgetButton {
     id: button
     anchors.fill: parent
@@ -988,7 +988,7 @@ Panel {
     }
   }
 
-  // ----------------------------------------------------------------- painel
+  // ------------------------------------------------------------------ panel
   KeyboardPanel {
     id: panel
     bar: root.bar
@@ -1089,7 +1089,7 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
-          // ------------------------------------------------------ lista
+          // ------------------------------------------------------- list
           Ui.TextField {
             id: search
             visible: root.view === "list"
@@ -1131,10 +1131,10 @@ Panel {
               id: sectionCol
               required property var modelData
               required property int index
-              // As linhas partilham um único cursor plano, por isso cada secção
-              // tem de somar as que vêm antes dela; sem o id explícito o
-              // `parent.parent` do delegate não chega aqui e todos os grupos
-              // começavam no índice 0, iluminando duas linhas ao mesmo tempo.
+              // Rows share a single flat cursor, so each section has to add up
+              // the ones before it; without the explicit id the delegate's
+              // `parent.parent` does not reach here and every group started
+              // at index 0, highlighting two rows at once.
               readonly property int offset: root.rowOffset(index)
               width: column.width
               spacing: Style.space(4)
@@ -1159,7 +1159,7 @@ Panel {
             }
           }
 
-          // ---------------------------------------------------- formulário
+          // ---------------------------------------------------------- form
           Column {
             visible: root.view === "form"
             width: parent.width
@@ -1294,7 +1294,7 @@ Panel {
               Item { Layout.fillWidth: true }
             }
           }
-          // ------------------------------------------------------ exportar
+          // -------------------------------------------------------- export
           Column {
             visible: root.view === "export"
             width: parent.width
@@ -1365,7 +1365,7 @@ Panel {
             }
           }
 
-          // ------------------------------------------------------ importar
+          // -------------------------------------------------------- import
           Column {
             visible: root.view === "import"
             width: parent.width
@@ -1445,8 +1445,8 @@ Panel {
         }
       }
 
-      // Fora do Flickable: com 22 servidores a lista empurrava estes botões
-      // para baixo da dobra, e a exportação ficava escondida.
+      // Outside the Flickable: with 22 servers the list pushed these buttons
+      // below the fold, and export ended up hidden.
       RowLayout {
         id: footerRow
         visible: root.view === "list"
@@ -1502,8 +1502,8 @@ Panel {
   }
 
 
-  // Ui.TextField não traz rótulo; este par rótulo+input dá ao formulário o
-  // mesmo alinhamento que o Dropdown, que já desenha o seu.
+  // Ui.TextField has no label; this label+input pair gives the form the
+  // same alignment as the Dropdown, which already draws its own.
   component Field: Column {
     id: field
     property string label: ""
@@ -1535,8 +1535,8 @@ Panel {
     }
   }
 
-  // Uma linha por servidor: o nome é a âncora, o destino fica por baixo e as
-  // acções só aparecem quando o rato ou o cursor passam por cima.
+  // One row per server: the name is the anchor, the destination sits below and
+  // the actions only appear when the mouse or the cursor passes over it.
   component ServerRow: CursorSurface {
     id: serverRow
     property var row: null
@@ -1568,7 +1568,7 @@ Panel {
       anchors.rightMargin: Style.space(8)
       spacing: Style.space(10)
 
-      // Rail: cheio quando o acesso é por senha guardada, ténue por chave.
+      // Rail: solid when access is by stored password, faint when by key.
       Rectangle {
         Layout.preferredWidth: Style.space(3)
         Layout.preferredHeight: rowBody.implicitHeight
@@ -1604,8 +1604,8 @@ Panel {
         }
       }
 
-      // Só o acesso por senha ganha marca; a chave é o caso normal e o rail
-      // à esquerda já o distingue sem encher a linha de ícones.
+      // Only password access gets a mark; key is the normal case and the rail
+      // on the left already tells them apart without filling the row with icons.
       Text {
         textFormat: Text.PlainText
         visible: !serverRow.hot && serverRow.row && serverRow.row.auth === "password"

@@ -1,23 +1,24 @@
 #!/bin/bash
 # upssh-plugin-id: io.github.wegnix.upssh
-# ^ Marcador de propriedade. O instalador e o desinstalador só tocam num
-#   ~/.local/bin/upssh que tenha esta linha ou que aponte para a pasta do
-#   plugin — um comando alheio com o mesmo nome fica intacto.
+# ^ Ownership marker. The installer and uninstaller only touch a
+#   ~/.local/bin/upssh that has this line or that points into the plugin
+#   folder — someone else's command with the same name is left alone.
 
-# upSSH — gestor de acessos SSH para o Omarchy: grupos, login por chave ou
-# por senha, com as senhas num cofre GPG AES-256.
+# upSSH — SSH access manager for Omarchy: groups, key or password login,
+# with passwords kept in an AES-256 GPG vault.
 # omarchy:args=[connect <id>|add|edit|remove|list|passwd|groups|menu-sync|vault-init|master]
 
 set -uo pipefail
 
-# Tudo o que este script cria (config, cofre, exportações, temporários) é só
-# do utilizador desde o primeiro byte, sem janela entre criar e fazer chmod.
+# Everything this script creates (config, vault, exports, temp files) is
+# private to the user from the first byte, with no window between create and
+# chmod.
 umask 077
 
-# Caminho absoluto deste script. As entradas geradas no menu do Omarchy
-# apontam para aqui, e não para "upssh", porque quem instala com
-# `omarchy plugin add` fica com o comando dentro da pasta do plugin e não no
-# PATH.
+# Absolute path of this script. The entries generated in the Omarchy menu
+# point here rather than to "upssh", because installing with
+# `omarchy plugin add` leaves the command inside the plugin folder, not on
+# the PATH.
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
 CONFIG_DIR="${UPSSH_DIR:-$HOME/.config/upssh}"
@@ -25,12 +26,12 @@ SERVERS="$CONFIG_DIR/servers.json"
 SECRETS="$CONFIG_DIR/secrets.gpg"
 PENDING="$CONFIG_DIR/pending-secrets.json"
 MENU_FILE="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
-BEGIN_MARK="  // >>> upssh (gerado automaticamente - nao editar) >>>"
+BEGIN_MARK="  // >>> upssh (generated automatically - do not edit) >>>"
 END_MARK="  // <<< upssh <<<"
 
 MASTER=""
 
-# O pinentry precisa de saber o terminal quando é chamado a partir de um.
+# pinentry needs to know the terminal when it is invoked from one.
 [[ -t 0 ]] && export GPG_TTY="${GPG_TTY:-$(tty 2>/dev/null)}"
 
 # Omarchy exports theme-matched gum styling; pick it up when available.
@@ -38,12 +39,12 @@ if command -v omarchy-restart-gum >/dev/null 2>&1; then
   source omarchy-restart-gum >/dev/null 2>&1 || true
 fi
 
-# ---------------------------------------------------------------- traduções
+# ------------------------------------------------------------ translations
 
 CONFIG_FILE="$CONFIG_DIR/config.json"
 
-# Idioma: o que estiver em config.json manda; sem isso segue o $LANG do
-# sistema, e na dúvida fica em inglês.
+# Language: config.json wins; otherwise follow the system $LANG, and when in
+# doubt fall back to English.
 detect_lang() {
   local l
   if [[ -f $CONFIG_FILE ]]; then
@@ -78,7 +79,7 @@ set_lang() {
 
 declare -A MSG_pt MSG_en
 
-# Catálogo de mensagens. Uma chave por linha, os dois idiomas lado a lado.
+# Message catalog. One key per line, both languages side by side.
 MSG_pt[invalid_json]="JSON inválido, alteração descartada."
 MSG_en[invalid_json]="Invalid JSON, change discarded."
 MSG_pt[master_create]="Criar senha mestra do cofre:"
@@ -395,8 +396,8 @@ MSG_pt[missing_deps]="Dependências em falta: %s"
 MSG_en[missing_deps]="Missing dependencies: %s"
 
 
-# t <chave> [args...] — devolve a mensagem traduzida, com printf por baixo,
-# para os %s entrarem na ordem certa em qualquer idioma.
+# t <key> [args...] — prints the translated message, via printf underneath,
+# so the %s placeholders land in the right order in any language.
 t() {
   local key="$1"
   shift
@@ -420,30 +421,31 @@ warn() { has_tty && gum style --foreground 3 "$*" || printf '%s\n' "$*" >&2; }
 err() { has_tty && gum style --foreground 1 "$*" || printf '%s\n' "$*" >&2; }
 has_tty() { [[ -t 0 && -t 1 ]]; }
 
-# Um caminho pertence-nos se for um link para este script ou se o ficheiro
-# carregar o marcador do plugin. Tudo o resto é de outra pessoa.
+# A path is ours if it is a link to this script or if the file carries the
+# plugin marker. Anything else belongs to someone else.
 upssh_owns() {
   local path="$1" resolved
   [[ -e $path || -L $path ]] || return 1
   resolved=$(readlink -f "$path" 2>/dev/null) || return 1
   [[ $resolved == "$SELF" ]] && return 0
-  # O marcador só existe a partir da 1.0.2; as versões anteriores reconhecem-se
-  # por esta constante, que mais nada usa.
+  # The marker only exists since 1.0.2; earlier versions are recognised by
+  # this constant, which nothing else uses.
   grep -qm1 -e '^# upssh-plugin-id: io.github.wegnix.upssh$' \
     -e '^EXPORT_MAGIC="upssh-export"$' "$resolved" 2>/dev/null
 }
 
-# Mantém a janela aberta quando algo corre mal, para a mensagem ser legível.
+# Keep the window open when something goes wrong, so the message is readable.
 hold() { has_tty && read -n1 -rs -p "$(t press_enter)" && echo; }
 
 ok() { has_tty && gum style --foreground 2 "$*" || printf '%s\n' "$*"; }
 
-# Pede um segredo. Com terminal usa o gum; sem terminal (widget da barra, `!`
-# no Claude Code, hook) cai no pinentry gráfico, que abre a sua própria janela.
+# Prompt for a secret. With a terminal it uses gum; without one (bar widget,
+# `!` in Claude Code, a hook) it falls back to the graphical pinentry, which
+# opens its own window.
 ask_secret() {
   local prompt="$1" out pin
-  # Chamada sempre dentro de $(...), por isso o stdout nunca é um terminal;
-  # o gum desenha no stderr, e é esse que conta.
+  # Always called inside $(...), so stdout is never a terminal; gum draws on
+  # stderr, and that is the one that matters.
   if [[ -t 0 && -t 2 ]]; then
     gum input --password --header "$prompt"
     return $?
@@ -454,7 +456,7 @@ ask_secret() {
   out=$(printf 'SETTITLE upSSH\nSETPROMPT %s\nSETDESC %s\nGETPIN\nBYE\n' \
     "$(t pin_label)" "$prompt" | "$pe" 2>/dev/null)
   pin=$(awk '/^D /{ print substr($0, 3); found=1 } END { exit !found }' <<<"$out") || return 1
-  # pinentry devolve o valor com percent-encoding (%25, %0A, ...).
+  # pinentry returns the value percent-encoded (%25, %0A, ...).
   printf '%s' "$pin" | python3 -c 'import sys,re; d=sys.stdin.read(); sys.stdout.write(re.sub(r"%([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), d))'
 }
 
@@ -472,33 +474,33 @@ slugify() {
     cut -c1-48 | sed 's/-\+$//'
 }
 
-# ------------------------------------------------------------------ validação
-# need_value "$@": a opção em $1 tem de trazer um valor em $2 (senão o
-# `shift 2` falhava e o ciclo de argumentos nunca terminava).
+# ----------------------------------------------------------------- validation
+# need_value "$@": the option in $1 must come with a value in $2 (otherwise
+# `shift 2` would fail and the argument loop would never end).
 need_value() {
   (($# >= 2)) && return 0
   printf '%s\n' "$(t missing_value "$1")" >&2
   return 1
 }
 
-# Os ids entram em chaves do menu do Omarchy e em linhas de comando; só este
-# formato é aceite, venha o valor do formulário, do painel ou de um ficheiro.
+# Ids end up in Omarchy menu keys and on command lines; only this format is
+# accepted, whether the value comes from the form, the panel or a file.
 valid_id() { [[ $1 =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; }
 
-# Host e utilizador vão parar ao argv do ssh: sem espaços, sem caracteres de
-# controlo e sem um '-' inicial, que o ssh leria como opção.
+# Host and user end up in ssh's argv: no spaces, no control characters and
+# no leading '-', which ssh would read as an option.
 valid_endpoint() { [[ -n $1 && $1 != -* && ! $1 =~ [[:space:][:cntrl:]] ]]; }
 
 valid_port() { [[ $1 =~ ^[0-9]{1,5}$ ]] && ((10#$1 >= 1 && 10#$1 <= 65535)); }
 
-# Texto livre (nome, grupo, caminho da chave, opções) sem caracteres de
-# controlo, que num terminal serviriam para injectar sequências de escape, nem
-# marcas bidireccionais, que deixam um nome parecer outro.
+# Free text (name, group, key path, options) without control characters,
+# which in a terminal could inject escape sequences, nor bidirectional marks,
+# which let one name look like another.
 JQ_CLEAN='def c: tostring | gsub("[[:cntrl:]\u200e\u200f\u202a-\u202e\u2066-\u2069]"; "");'
 
 strip_cntrl() { jq -rnj --arg v "$1" "$JQ_CLEAN"' $v | c'; }
 
-# Nenhum ficheiro nosso chega perto disto; um maior não é lido.
+# None of our files comes close to this; a larger one is not read.
 MAX_FILE=1048576
 
 check_size() {
@@ -517,9 +519,9 @@ ensure_store() {
   check_size "$SERVERS" || exit 1
 }
 
-# Um só escritor de cada vez: o painel e a TUI fazem ler-alterar-gravar sobre
-# os mesmos ficheiros. O lock vive no fd 9 até ao fim do processo (comandos
-# da API) ou até store_unlock (entre acções da TUI).
+# One writer at a time: the panel and the TUI do read-modify-write on the
+# same files. The lock lives on fd 9 until the process exits (API commands)
+# or until store_unlock (between TUI actions).
 STORE_LOCKED=false
 
 store_lock() {
@@ -549,10 +551,10 @@ save_servers() {
   mv "$tmp" "$SERVERS"
 }
 
-# Ids cuja senha no cofre já não pode ser usada: o servidor foi apagado sem
-# o cofre abrir, ou um import trocou-lhe o destino. Enquanto aqui estiverem,
-# a senha não é enviada e o id não é reaproveitado; a próxima escrita no
-# cofre apaga-as e limpa a lista.
+# Ids whose password in the vault can no longer be used: the server was
+# deleted without the vault being opened, or an import changed its target.
+# While they are listed here, the password is not sent and the id is not
+# reused; the next vault write deletes them and clears the list.
 stale_ids() { jq -c '.staleSecrets // []' "$SERVERS"; }
 
 is_stale() { jq -e --arg id "$1" '(.staleSecrets // []) | index($id) != null' "$SERVERS" >/dev/null 2>&1; }
@@ -562,14 +564,15 @@ stale_clear() {
   jq 'del(.staleSecrets)' "$SERVERS" | save_servers
 }
 
-# ---------------------------------------------------------------- cofre (gpg)
+# ---------------------------------------------------------------- vault (gpg)
 
-# Leitura: sem MASTER em memória deixa-se o gpg-agent tratar do pedido e da
-# cache — a senha mestra fica na memória protegida do agente, nunca neste
-# processo, e as ligações seguintes não voltam a pedi-la enquanto o TTL durar.
-# Com MASTER (fluxos de escrita) usa-se o modo loopback, que não mexe na cache.
+# Read: with no MASTER in memory, gpg-agent handles the prompt and the
+# cache — the master password stays in the agent's protected memory, never in
+# this process, and later connections don't ask again while the TTL lasts.
+# With MASTER (write flows) loopback mode is used, which leaves the cache
+# alone.
 secrets_read() {
-  # 9>&-: um gpg-agent arrancado aqui não pode herdar o fd do lock.
+  # 9>&-: a gpg-agent started here must not inherit the lock fd.
   if [[ -n $MASTER ]]; then
     gpg --quiet --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
       --decrypt "$SECRETS" 3<<<"$MASTER" 2>/dev/null 9>&-
@@ -578,9 +581,9 @@ secrets_read() {
   fi
 }
 
-# Grava o stdin no cofre — mas só se for um objecto JSON de strings. Um jq
-# que falhe a montante entrega um stdin vazio, e cifrar isso apagaria todas
-# as senhas; nesse caso o cofre fica exactamente como estava.
+# Write stdin to the vault — but only if it is a JSON object of strings. A
+# jq failing upstream yields an empty stdin, and encrypting that would wipe
+# every password; in that case the vault stays exactly as it was.
 secrets_write() {
   local plain tmp
   plain=$(cat) || return 1
@@ -631,11 +634,11 @@ get_password() {
   secrets_read | jq -r --arg id "$1" '.[$id] // empty'
 }
 
-# vault_update <filtro jq> [argumentos jq...]
-# Aplica o filtro ao cofre decifrado, depois de lhe tirar as senhas
-# marcadas como obsoletas. Segredos entram nos argumentos só como caminhos
-# (--rawfile/--slurpfile sobre um pipe), nunca como texto no argv, que
-# qualquer utilizador lê em /proc/<pid>/cmdline.
+# vault_update <jq filter> [jq arguments...]
+# Applies the filter to the decrypted vault, after removing the passwords
+# marked as stale. Secrets enter the arguments only as paths
+# (--rawfile/--slurpfile over a pipe), never as text in argv, which any
+# user can read in /proc/<pid>/cmdline.
 vault_update() {
   local filter="$1"
   shift
@@ -671,7 +674,7 @@ change_master() {
   printf '%s' "$plain" | secrets_write && ok "$(t master_changed)"
 }
 
-# Importa um ficheiro de senhas em texto limpo para dentro do cofre e apaga-o.
+# Import a plaintext passwords file into the vault and delete it.
 vault_init() {
   ensure_store
   store_lock || return 1
@@ -697,7 +700,7 @@ vault_init() {
   ok "$(t vault_ready)"
 }
 
-# ------------------------------------------------------------------- consulta
+# ---------------------------------------------------------------------- query
 
 server_json() { jq -c --arg id "$1" '.servers[] | select(.id == $id)' "$SERVERS"; }
 
@@ -705,8 +708,8 @@ server_exists() { [[ -n $(server_json "$1") ]]; }
 
 groups_list() { jq -r "$JQ_CLEAN"' [.servers[].group | strings | c] | unique | .[]' "$SERVERS"; }
 
-# id_taken <id> [json]: ocupado por um servidor ou por uma senha obsoleta
-# ainda por apagar — reaproveitá-lo faria essa senha seguir para outro host.
+# id_taken <id> [json]: taken by a server or by a stale password not yet
+# deleted — reusing it would send that password to another host.
 id_taken() {
   local filter='any(.servers[]; .id == $id) or ((.staleSecrets // []) | index($id) != null)'
   if (($# > 1)); then
@@ -716,11 +719,11 @@ id_taken() {
   fi
 }
 
-# new_id <nome> [json]
+# new_id <name> [json]
 new_id() {
   local base id n=2
   base=$(slugify "$1")
-  valid_id "$base" || base="servidor"
+  valid_id "$base" || base="server"
   id="$base"
   while id_taken "$id" "${@:2}"; do
     id="$base-$n"
@@ -729,8 +732,8 @@ new_id() {
   printf '%s' "$id"
 }
 
-# Campos mostrados no terminal passam por aqui: um nome importado não pode
-# trazer sequências de escape.
+# Fields shown in the terminal go through here: an imported name must not
+# carry escape sequences.
 
 cmd_list() {
   ensure_store
@@ -746,10 +749,10 @@ confirm() {
   gum confirm "$*" --default=no
 }
 
-# Primeiro acesso a um host: em vez de deixar o ssh falhar (o sshpass nem
-# chega a mostrar o pedido), mostra-se a impressão digital da chave e pede-se
-# confirmação antes de a gravar. É o mesmo grau de confiança que responder
-# "yes" ao ssh, mas com a impressão digital à vista.
+# First connection to a host: instead of letting ssh fail (sshpass never
+# even shows the prompt), show the key fingerprint and ask for confirmation
+# before saving it. It is the same level of trust as answering "yes" to ssh,
+# but with the fingerprint in plain view.
 ensure_host_key() {
   local host="$1" port="$2" target scan
   [[ $port == 22 ]] && target="$host" || target="[$host]:$port"
@@ -757,8 +760,8 @@ ensure_host_key() {
 
   scan=$(ssh-keyscan -p "$port" -T 8 -- "$host" 2>/dev/null | grep -v '^#')
   if [[ -z $scan ]]; then
-    # Alias do ssh_config, ProxyJump, known_hosts global...: o ssh sabe
-    # resolver o que o keyscan não alcança, por isso a decisão fica com ele.
+    # ssh_config alias, ProxyJump, global known_hosts...: ssh can resolve
+    # what keyscan cannot reach, so the decision is left to it.
     warn "$(t hostkey_unverified "$host" "$port")"
     return 0
   fi
@@ -777,7 +780,7 @@ ensure_host_key() {
   ok "$(t hostkey_saved)"
 }
 
-# ------------------------------------------------------------------- ligação
+# ---------------------------------------------------------------- connection
 
 cmd_connect() {
   local id="${1:-}"
@@ -797,13 +800,13 @@ cmd_connect() {
   identity=$(jq -r '.identity // ""' <<<"$s")
   options=$(jq -r '.options // ""' <<<"$s")
 
-  # Dados antigos ou editados à mão passam pela mesma validação do cadastro.
+  # Old or hand-edited data goes through the same validation as registration.
   valid_endpoint "$host" || { err "$(t bad_field host "$(strip_cntrl "$host")")"; hold; return 1; }
   valid_endpoint "$user" || { err "$(t bad_field user "$(strip_cntrl "$user")")"; hold; return 1; }
   valid_port "$port" || { err "$(t bad_port "$(strip_cntrl "$port")")"; hold; return 1; }
 
-  # Só o login por senha precisa disto: debaixo do sshpass o ssh não
-  # consegue perguntar pela chave. Com chave, o próprio ssh pergunta.
+  # Only password login needs this: under sshpass, ssh cannot ask about the
+  # host key. With key login, ssh asks by itself.
   if [[ $auth == password ]]; then
     ensure_host_key "$host" "$port" || { hold; return 1; }
   fi
@@ -822,9 +825,9 @@ cmd_connect() {
       hold
       return 1
     fi
-    # O ssh recusa chaves legíveis por outros. Pastas sincronizadas (Nextcloud,
-    # Dropbox) repõem 0644 com frequência, por isso corrige-se a cada ligação —
-    # mas só dentro de ~/.ssh e em ficheiros nossos; fora disso apenas avisa.
+    # ssh refuses keys readable by others. Synced folders (Nextcloud, Dropbox)
+    # often reset them to 0644, so this is fixed on every connection — but
+    # only inside ~/.ssh and on files we own; elsewhere it only warns.
     real=$(readlink -f -- "$keyfile")
     mode=$(stat -c '%a' -- "$real")
     if [[ $mode != 600 && $mode != 400 ]]; then
@@ -836,7 +839,7 @@ cmd_connect() {
     fi
     cmd+=(-i "$keyfile")
   fi
-  # "--" fecha as opções: o destino nunca é lido como uma.
+  # "--" ends the options: the destination is never read as one.
   cmd+=(-- "$user@$host")
 
   printf '\033]0;%s\007' "$name"
@@ -865,7 +868,7 @@ cmd_connect() {
   return $rc
 }
 
-# ------------------------------------------------------------------- cadastro
+# -------------------------------------------------------------- registration
 
 pick_group() {
   local -a opts=()
@@ -880,10 +883,10 @@ pick_group() {
   printf '%s' "$sel"
 }
 
-# write_server <id|vazio> <nome> <grupo> <host> <porta> <utilizador> <auth>
-#              <identidade> <opções>
-# Único caminho de escrita de um servidor (TUI, painel): valida tudo, grava
-# e imprime o id final. Devolve 2 quando um campo é inválido.
+# write_server <id|empty> <name> <group> <host> <port> <user> <auth>
+#              <identity> <options>
+# The only write path for a server (TUI, panel): validates everything, saves
+# and prints the final id. Returns 2 when a field is invalid.
 write_server() {
   local id="$1" name group host="$4" port="${5:-22}" user="$6" auth="$7" identity options
   name=$(strip_cntrl "$2")
@@ -916,7 +919,7 @@ write_server() {
   printf '%s' "$id"
 }
 
-# form <id-ou-vazio>
+# form <id-or-empty>
 server_form() {
   local id="${1:-}" cur='{}'
   [[ -n $id ]] && cur=$(server_json "$id")
@@ -966,8 +969,8 @@ server_form() {
   options=$(gum input --header "$(t f_options)" --value "$d_options" \
     --placeholder "-oHostKeyAlgorithms=+ssh-rsa") || return 1
 
-  # O lock é tomado aqui, no processo principal: o $(...) corre numa subshell
-  # e um lock tomado lá dentro soltava-se logo à saída.
+  # The lock is taken here, in the main process: $(...) runs in a subshell
+  # and a lock taken in there would be released as soon as it exits.
   store_lock || return 1
   id=$(write_server "$id" "$name" "$group" "$host" "$port" "$user" "$auth" "$identity" "$options") || return 1
 
@@ -1010,13 +1013,14 @@ pick_server_id() {
   return 1
 }
 
-# Tira o servidor e a senha dele. Se o cofre não abrir, o id fica marcado
-# como obsoleto: a senha antiga não pode acabar num servidor novo que
-# herde o mesmo id.
+# Remove the server and its password. If the vault doesn't open, the id is
+# marked as stale: the old password must not end up on a new server that
+# inherits the same id.
 delete_server() {
   local id="$1"
   store_lock || return 1
-  # Numa só escrita: o servidor sai e, havendo cofre, o id fica marcado.
+  # In a single write: the server goes and, if there is a vault, the id is
+  # marked.
   jq --arg id "$id" --argjson vault "$([[ -f $SECRETS ]] && echo true || echo false)" '
     .servers |= map(select(.id != $id))
     | if $vault then .staleSecrets = (((.staleSecrets // []) + [$id]) | unique) else . end
@@ -1074,23 +1078,23 @@ move_server_group() {
   ok "$(t moved_to "$group")"
 }
 
-# -------------------------------------------------------------- menu Omarchy
+# -------------------------------------------------------------- Omarchy menu
 
 menu_block() {
-  # O menu do Omarchy congela a altura maxima na primeira lista aberta, por
-  # isso a rota "upssh" lista todos os servidores (card alto e pesquisavel) e os
-  # grupos ficam em "upssh._grupos", ja a herdar essa altura. As entradas
-  # fixas começam por "_", que nenhum id de servidor pode ter.
+  # The Omarchy menu freezes its max height on the first list opened, so the
+  # "upssh" route lists every server (tall, searchable card) and the groups
+  # live under "upssh._groups", already inheriting that height. Fixed entries
+  # start with "_", which no server id can have.
   #
-  # Tudo sai do jq: chaves e valores passam por tojson e os comandos por @sh,
-  # por isso nenhum nome, grupo ou id consegue fechar uma string do JSONC nem
-  # acrescentar comandos à acção que o menu corre com bash -lc.
+  # Everything comes out of jq: keys and values go through tojson and commands
+  # through @sh, so no name, group or id can close a JSONC string or append
+  # commands to the action the menu runs with bash -lc.
   local -A used=()
   local slugs='[]' group slug base n
   while IFS= read -r group; do
     [[ -n $group ]] || continue
     base=$(slugify "$group")
-    [[ -n $base ]] || base="grupo"
+    [[ -n $base ]] || base="group"
     slug="$base"
     n=2
     while [[ -n ${used[$slug]-} ]]; do
@@ -1114,27 +1118,27 @@ menu_block() {
     ($srv | sort_by(.group, .name) | .[] |
       entry("upssh." + .id; {icon: "", label: (.name|c), description: ((.group|c) + " · " + dest),
         aliases: [(.group|c), (.host|c)], action: launch(["connect", .id])})),
-    entry("upssh._grupos"; {icon: "", label: $byGroup, description: $byGroupDesc}),
+    entry("upssh._groups"; {icon: "", label: $byGroup, description: $byGroupDesc}),
     ($slugs[] | .[0] as $g | .[1] as $s |
-      entry("upssh._grupos." + $s; {icon: "", label: $g}),
+      entry("upssh._groups." + $s; {icon: "", label: $g}),
       ($srv | map(select((.group|c) == $g)) | sort_by(.name) | .[] |
-        entry("upssh._grupos." + $s + "." + .id; {icon: "", label: (.name|c), description: dest,
+        entry("upssh._groups." + $s + "." + .id; {icon: "", label: (.name|c), description: dest,
           action: launch(["connect", .id])}))),
-    entry("upssh._gerir"; {icon: "", label: $manage, description: $manageDesc, action: launch([])})
+    entry("upssh._manage"; {icon: "", label: $manage, description: $manageDesc, action: launch([])})
   ' "$SERVERS" || return 1
   printf '%s\n' "$END_MARK"
 }
 
-# Reescreve o bloco do upSSH no menu do Omarchy. O trabalho está em
-# MENU_MERGE_PY (python): tira o bloco antigo, insere o novo antes da
-# chaveta que fecha a raiz e só devolve o resultado se o Omarchy o
-# conseguir ler e se todas as entradas do utilizador lá continuarem.
+# Rewrite the upSSH block in the Omarchy menu. The work is done in
+# MENU_MERGE_PY (python): it removes the old block, inserts the new one
+# before the brace that closes the root, and only returns the result if
+# Omarchy can read it and every user entry is still there.
 menu_sync() {
   ensure_store
   store_lock || return 1
   local target dir mode block tmp rc
-  # Um link (dotfiles) é seguido até ao ficheiro real, que é o que se
-  # reescreve, e o link fica. Um link partido não é seguido.
+  # A link (dotfiles) is followed to the real file, which is what gets
+  # rewritten, and the link stays. A broken link is not followed.
   if [[ -L $MENU_FILE && ! -e $MENU_FILE ]]; then
     err "$(t menu_link_broken "$MENU_FILE")"
     return 1
@@ -1175,10 +1179,10 @@ text = open(path, encoding="utf-8").read().replace("\r\n", "\n")
 
 BEGIN, END = "// >>> upssh", "// <<< upssh"
 
-# Os marcadores têm de vir em pares abre/fecha. Se o bloco estiver partido
-# (editado à mão, colado pela metade), não há forma segura de saber onde
-# acaba, e apagar até ao fim do ficheiro levaria entradas do utilizador.
-# Nesse caso sai com 3 sem escrever nada e o ficheiro fica como está.
+# Markers must come in open/close pairs. If the block is broken (hand
+# edited, half pasted), there is no safe way to know where it ends, and
+# deleting to the end of the file would take user entries with it.
+# In that case exit with 3 without writing anything and leave the file as is.
 kinds = []
 for line in text.split("\n"):
     t = line.strip()
@@ -1202,8 +1206,8 @@ text = "\n".join(out)
 
 
 def root_close(t):
-    """Posição da chaveta que fecha o objecto da raiz e do último caracter
-    significativo antes dela, saltando strings e comentários."""
+    """Position of the brace that closes the root object and of the last
+    significant character before it, skipping strings and comments."""
     i, n, depth, opened, last = 0, len(t), 0, False, None
     while i < n:
         c = t[i]
@@ -1247,9 +1251,9 @@ def root_close(t):
     return None
 
 
-# O mesmo que o menu do Omarchy faz antes do JSON.parse (MenuModel.js):
-# tira as linhas que são só comentário e as vírgulas finais. O resultado tem
-# de passar por aqui, senão o Omarchy deixava de ler o menu inteiro.
+# Same as what the Omarchy menu does before JSON.parse (MenuModel.js):
+# strips comment-only lines and trailing commas. The result must pass this,
+# otherwise Omarchy would stop reading the whole menu.
 def omarchy_parse(t):
     t = re.sub(r"^\s*//[^\n]*(\n|$)", "", t, flags=re.M)
     t = re.sub(r",(\s*[}\]])", r"\1", t)
@@ -1263,8 +1267,8 @@ try:
 except ValueError:
     sys.exit(4)
 if not isinstance(original, dict) or isinstance(original.get("items"), dict):
-    # Com "items" o Omarchy só lê o que está lá dentro; entradas na raiz
-    # seriam ignoradas em silêncio.
+    # With "items" Omarchy only reads what is inside it; entries at the root
+    # would be silently ignored.
     sys.exit(4)
 
 pos = root_close(text)
@@ -1290,11 +1294,11 @@ if not isinstance(parsed, dict) or any(parsed.get(k) != v for k, v in original.i
 sys.stdout.write(result)
 '
 
-# --------------------------------------------- API nao-interativa (painel QML)
+# ---------------------------------------------- non-interactive API (QML panel)
 
-# save --id <id|vazio> --name .. --group .. --host .. --port .. --user ..
+# save --id <id|empty> --name .. --group .. --host .. --port .. --user ..
 #      --auth key|password --identity .. --options ..
-# Imprime o id resultante.
+# Prints the resulting id.
 api_save() {
   local id="" name="" group="" host="" port="22" user="root" auth="key" identity="" options=""
   while (($#)); do
@@ -1326,7 +1330,8 @@ api_delete() {
   menu_sync >/dev/null 2>&1
 }
 
-# Lê a senha da primeira linha do stdin, para o painel não a passar por argv.
+# Read the password from the first line of stdin, so the panel doesn't pass
+# it via argv.
 api_set_password() {
   local id="${1:-}" pw
   [[ -n $id ]] || { printf '%s\n' "$(t usage "upssh set-password <id>")" >&2; return 2; }
@@ -1349,35 +1354,37 @@ api_group_rename() {
   menu_sync >/dev/null 2>&1
 }
 
-# Diz quais os ids que ja tem senha guardada, sem revelar as senhas.
-# Requer a senha mestra (pinentry quando nao ha terminal).
+# Report which ids already have a stored password, without revealing them.
+# Requires the master password (pinentry when there is no terminal).
 api_has_password() {
   [[ -f $SECRETS ]] || { printf '[]\n'; return 0; }
-  # Leitura pelo gpg-agent: com a senha mestra em cache não pede nada.
+  # Read via gpg-agent: with the master password cached, nothing is prompted.
   secrets_read | jq -c --argjson stale "$(stale_ids)" 'keys - $stale' 2>/dev/null || printf '[]\n'
 }
 
-# O que o painel lê: só servidores bem formados, com o tamanho já limitado
-# por ensure_store, e sem campos internos.
+# What the panel reads: only well-formed servers, size already capped by
+# ensure_store, and no internal fields.
 api_json() {
   jq -c '{version: (.version // 1),
           servers: [(.servers // [])[] | select(type == "object" and (.id | type) == "string")
                     | {id, name, group, host, port, user, auth, identity, options}]}' "$SERVERS"
 }
 
-# ------------------------------------------------------- exportar / importar
+# ------------------------------------------------------------ export / import
 
 EXPORT_MAGIC="upssh-export"
 
-# Com --stdin-pass a senha do ficheiro chega pela primeira linha do stdin, em
-# vez de um pinentry: é como o painel gráfico a entrega, sem passar por argv.
+# With --stdin-pass the file password arrives on the first line of stdin
+# instead of via pinentry: that is how the graphical panel hands it over,
+# without going through argv.
 STDIN_PASS=false
 
-# export [--com-senhas] [--overwrite] [ficheiro]
-# Sem senhas produz JSON legível; com senhas produz um .gpg simétrico cifrado
-# com uma senha escolhida na exportação — deliberadamente separada da senha
-# mestra, para o ficheiro poder viajar sem levar a chave do cofre consigo.
-# Um ficheiro que já exista (ou um link) só é substituído com --overwrite.
+# export [--with-passwords|--com-senhas] [--overwrite] [file]
+# Without passwords it produces readable JSON; with passwords it produces a
+# symmetric .gpg encrypted with a password chosen at export time —
+# deliberately separate from the master password, so the file can travel
+# without carrying the vault key with it.
+# An existing file (or a link) is only replaced with --overwrite.
 cmd_export() {
   local with_secrets=false overwrite=false dest=""
   while (($#)); do
@@ -1393,12 +1400,12 @@ cmd_export() {
   local stamp payload
   stamp=$(date +%Y%m%d-%H%M%S)
 
-  # Um diálogo de gravação pode devolver só a pasta; nesse caso inventa-se o
-  # nome em vez de falhar com "é um directório".
+  # A save dialog may return just the folder; in that case a name is made up
+  # instead of failing with "is a directory".
   local ext
   [[ $with_secrets == true ]] && ext="gpg" || ext="json"
-  # Se o nome tiver de ser inventado ou completado, já não é o ficheiro que
-  # quem pediu --overwrite confirmou: nesse caso nada é substituído.
+  # If the name had to be made up or completed, it is no longer the file the
+  # caller confirmed with --overwrite: in that case nothing is replaced.
   [[ -n $dest ]] || dest="$HOME"
   if [[ -d $dest ]]; then
     dest="${dest%/}/upssh-$stamp.$ext"
@@ -1423,8 +1430,8 @@ cmd_export() {
     [[ -f $SECRETS ]] || { err "$(t vault_none)"; return 1; }
     local vault
     vault=$(secrets_read) || { err "$(t vault_open_fail)"; return 1; }
-    # Só viajam as senhas dos servidores que vão no ficheiro, e nunca as
-    # obsoletas. O cofre entra no jq por um pipe, não pelo argv.
+    # Only the passwords of servers included in the file travel, and never
+    # stale ones. The vault reaches jq through a pipe, not argv.
     payload=$(jq --slurpfile v <(printf '%s' "$vault") --argjson stale "$(stale_ids)" '
       . as $p | . + {secrets: ($v[0] | with_entries(select(.key as $k
         | ($stale | index($k)) == null and any($p.servers[]; .id == $k))))}' <<<"$payload") || return 1
@@ -1441,9 +1448,9 @@ cmd_export() {
     [[ -n $a && $a == "$b" ]] || { err "$(t pass_mismatch)"; return 1; }
   fi
 
-  # Escreve-se primeiro um temporário na pasta de destino (0600 pela umask),
-  # e só depois ele toma o lugar do destino: sem janela com permissões
-  # abertas, sem seguir um link que lá esteja e sem ficheiros a meio.
+  # First write a temp file in the target folder (0600 via umask), and only
+  # then move it into place: no window with open permissions, no following a
+  # link that is already there, and no half-written files.
   local tmp
   tmp=$(mktemp "$dir/.upssh-export.XXXXXX") || { err "$(t export_write_fail "$dest")"; return 1; }
   if [[ $with_secrets == true ]]; then
@@ -1459,8 +1466,8 @@ cmd_export() {
   if [[ $overwrite == true ]]; then
     mv -f -T -- "$tmp" "$dest" || { rm -f "$tmp"; err "$(t export_write_fail "$dest")"; return 1; }
   else
-    # -n com renameat2(RENAME_NOREPLACE): se entretanto apareceu um
-    # ficheiro no destino, o temporário fica e é apagado.
+    # -n with renameat2(RENAME_NOREPLACE): if a file has appeared at the
+    # target in the meantime, the temp file stays and is deleted.
     mv -n -T -- "$tmp" "$dest" 2>/dev/null
     if [[ -e $tmp ]]; then
       rm -f "$tmp"
@@ -1477,12 +1484,12 @@ cmd_export() {
   printf '%s\n' "$dest"
 }
 
-# Lê o ficheiro, decifrando se for .gpg. Ecoa o JSON, nunca mais do que
-# MAX_FILE bytes (quem chama verifica se o limite foi atingido).
+# Read the file, decrypting it if it is .gpg. Echoes the JSON, never more
+# than MAX_FILE bytes (the caller checks whether the limit was hit).
 read_export_file() {
   local file="$1"
-  # Pelo conteúdo, não pelo nome: um JSON em claro é lido tal como está e
-  # tudo o resto é tratado como um ficheiro cifrado pelo gpg.
+  # By content, not by name: plaintext JSON is read as is and everything
+  # else is treated as a gpg-encrypted file.
   if ! jq -e 'type == "object"' -- "$file" >/dev/null 2>&1; then
     local pass
     if [[ $STDIN_PASS == true ]]; then
@@ -1498,10 +1505,10 @@ read_export_file() {
   fi
 }
 
-# Um ficheiro importado pode vir de outra pessoa. Destas opções ssh só se
-# aceitam as que não correm comandos nem baixam a guarda ao ligar
-# (ProxyCommand, LocalCommand, ForwardAgent, StrictHostKeyChecking... ficam
-# todas de fora). Deixa o resultado em SAFE_OPTS_KEPT / SAFE_OPTS_DROPPED.
+# An imported file may come from someone else. Of its ssh options, only
+# those that neither run commands nor lower defences when connecting are
+# accepted (ProxyCommand, LocalCommand, ForwardAgent, StrictHostKeyChecking...
+# are all left out). Leaves the result in SAFE_OPTS_KEPT / SAFE_OPTS_DROPPED.
 SAFE_SSH_KEYS=" hostkeyalgorithms pubkeyacceptedalgorithms pubkeyacceptedkeytypes kexalgorithms ciphers macs serveraliveinterval serveralivecountmax connecttimeout connectionattempts compression tcpkeepalive identitiesonly preferredauthentications passwordauthentication pubkeyauthentication kbdinteractiveauthentication addressfamily loglevel "
 
 safe_options() {
@@ -1532,10 +1539,10 @@ safe_options() {
   SAFE_OPTS_DROPPED="${dropped[*]}"
 }
 
-# import <ficheiro> [--conflito substituir|manter|copiar|perguntar] [--dry-run]
-# Tudo é validado e decidido numa cópia em memória; servers.json é gravado
-# uma única vez, no fim, e o cofre logo a seguir. Se o ficheiro traz senhas
-# e o cofre não abre, nada é importado.
+# import <file> [--conflito substituir|manter|copiar|perguntar] [--dry-run]
+# Everything is validated and decided on an in-memory copy; servers.json is
+# written only once, at the end, and the vault right after. If the file
+# carries passwords and the vault doesn't open, nothing is imported.
 cmd_import() {
   local file="" policy="perguntar" dry=false
   while (($#)); do
@@ -1572,12 +1579,12 @@ cmd_import() {
     err "$(t import_too_big "$file")"
     return 1
   fi
-  # Exactamente um objecto: dois JSON seguidos no mesmo ficheiro não passam.
+  # Exactly one object: two JSON values back to back in one file are rejected.
   jq -e -s --arg m "$EXPORT_MAGIC" 'length == 1 and (.[0] | .magic == $m and (.servers | type == "array"))' <<<"$data" >/dev/null 2>&1 ||
     { err "$(t not_an_export)"; return 1; }
 
-  # --dry-run: só diz que servidores do ficheiro já existem (um nome por
-  # linha), para o painel mostrar os conflitos antes de importar.
+  # --dry-run: only reports which servers in the file already exist (one
+  # name per line), so the panel can show conflicts before importing.
   if [[ $dry == true ]]; then
     jq -r --slurpfile d <(printf '%s' "$data") "$JQ_CLEAN"'
       .servers as $cur | $d[0].servers[] | select(type == "object") | .id as $i
@@ -1589,7 +1596,7 @@ cmd_import() {
   local work total added=0 replaced=0 kept=0 copied=0 invalid=0
   work=$(cat "$SERVERS")
   total=$(jq '.servers | length' <<<"$data")
-  local map='{}'   # id no ficheiro -> id final, para as senhas que vêm atrás
+  local map='{}'   # id in the file -> final id, for the passwords that follow
 
   local i
   for ((i = 0; i < total; i++)); do
@@ -1625,7 +1632,7 @@ cmd_import() {
     options=$SAFE_OPTS_KEPT
     [[ -z $SAFE_OPTS_DROPPED ]] || warn "$(t import_opts_dropped "$name" "$SAFE_OPTS_DROPPED")"
 
-    local action="adicionar" exists=false
+    local action="add" exists=false
     valid_id "$id" || id=""
     if [[ -n $id ]] && jq -e --arg id "$id" 'any(.servers[]; .id == $id)' >/dev/null <<<"$work"; then
       exists=true
@@ -1654,7 +1661,7 @@ cmd_import() {
         ;;
       esac
     elif [[ -z $id ]] || id_taken "$id" "$work"; then
-      # Id inválido, ou ocupado por uma senha obsoleta: entra com um id novo.
+      # Invalid id, or taken by a stale password: comes in with a new id.
       id=""
     fi
 
@@ -1668,15 +1675,15 @@ cmd_import() {
     copiar) id=""; ((copied++)) ;;
     substituir)
       ((replaced++))
-      # O destino mudou e o ficheiro não traz senha nova: a senha guardada
-      # não pode seguir para o host novo.
+      # The target changed and the file brings no new password: the stored
+      # password must not go to the new host.
       if [[ $has_secret == false ]] && ! jq -e --arg id "$id" --arg h "$host" --arg u "$user" --argjson p "$port" \
         '.servers[] | select(.id == $id) | .host == $h and .user == $u and .port == $p' >/dev/null <<<"$work"; then
         work=$(jq -c --arg id "$id" '.staleSecrets = (((.staleSecrets // []) + [$id]) | unique)' <<<"$work")
         warn "$(t import_pass_dropped "$name")"
       fi
       ;;
-    adicionar) ((added++)) ;;
+    add) ((added++)) ;;
     esac
     [[ -n $id ]] || id=$(new_id "$name" "$work")
 
@@ -1697,7 +1704,7 @@ cmd_import() {
   fi
   printf '%s' "$work" | save_servers || return 1
   if ((nsecrets > 0)); then
-    # As senhas vão do ficheiro para o cofre sem passar pelo argv.
+    # Passwords go from the file into the vault without passing through argv.
     vault_update '. * ($d[0].secrets as $s | $map | with_entries({key: .value, value: $s[.key]}))' \
       --slurpfile d <(printf '%s' "$data") --argjson map "$map" ||
       { err "$(t import_pass_fail)"; return 1; }
@@ -1736,8 +1743,8 @@ choose_lang() {
   ok "$(t lang_set)"
 }
 
-# As entradas são escolhidas por índice, não pelo texto: assim o menu continua
-# a funcionar em qualquer idioma sem casos especiais por tradução.
+# Entries are chosen by index, not by text: that way the menu keeps working
+# in any language without per-translation special cases.
 manage_menu() {
   local -a keys=(m_add m_edit m_remove m_pass m_move m_rename m_listall
                  m_export m_import m_sync m_master m_lang m_back)
@@ -1771,8 +1778,8 @@ manage_menu() {
     m_lang) choose_lang ;;
     m_back) return 0 ;;
     esac
-    # Entre acções a TUI fica à espera do utilizador; o painel não pode
-    # ficar bloqueado por isso.
+    # Between actions the TUI waits for the user; the panel must not be
+    # blocked because of that.
     store_unlock
   done
 }
@@ -1856,9 +1863,9 @@ group-rename)
   ;;
 has-password) api_has_password ;;
 link)
-  # Quem instalou pelo `omarchy plugin add` tem o comando dentro da pasta do
-  # plugin; isto põe-no ao alcance do terminal sem copiar nada. Um ficheiro
-  # alheio com o mesmo nome nunca é substituído.
+  # Installs via `omarchy plugin add` keep the command inside the plugin
+  # folder; this puts it within reach of the terminal without copying
+  # anything. Someone else's file with the same name is never replaced.
   shift
   target="$HOME/.local/bin/upssh"
   if [[ ${1:-} == --name ]]; then
