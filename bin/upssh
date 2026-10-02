@@ -839,6 +839,7 @@ cmd_connect() {
     fi
     cmd+=(-i "$keyfile")
   fi
+  cmd+=(-4 -o ConnectTimeout=5)
   # "--" ends the options: the destination is never read as one.
   cmd+=(-- "$user@$host")
 
