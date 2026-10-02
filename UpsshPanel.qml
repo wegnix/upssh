@@ -67,9 +67,6 @@ Panel {
   // overwriting a file; when typed by hand, the command refuses to overwrite.
   property bool exportPathConfirmed: false
 
-  // Language selector popup
-  property bool langPopupOpen: false
-
   // Nothing is run until we know which `upssh` to use (the plugin's or the
   // PATH one); before that a foreign `upssh` on the PATH could be called.
   property bool probed: false
@@ -1484,92 +1481,12 @@ Panel {
           onClicked: root.syncMenu()
         }
 
-        CursorSurface {
-          width: Style.space(40)
-          height: Style.space(24)
-          foreground: root.foreground
-          accent: root.accent
-          hasCursor: langSelectorArea.containsMouse
-
-          MouseArea {
-            id: langSelectorArea
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.langPopupOpen = !root.langPopupOpen
-          }
-
-          RowLayout {
-            anchors.centerIn: parent
-            spacing: Style.space(2)
-
-            Text {
-              text: root.lang === "en" ? "EN" : "PT"
-              color: root.accent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-            }
-
-            Text {
-              text: "\u25bc"
-              color: root.accent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-          }
-        }
-
-        Popup {
-          id: langPopup
-          visible: root.langPopupOpen
-          width: Style.space(100)
-          implicitHeight: column.implicitHeight + Style.space(4)
-          x: langSelectorArea.x - width + Style.space(40)
-          y: langSelectorArea.y + Style.space(26)
-
-          background: Rectangle {
-            color: root.bar ? root.bar.background : Color.surface
-            border.color: root.accent
-            border.width: 1
-            radius: 4
-          }
-
-          Column {
-            id: column
-            width: parent.width
-            padding: Style.space(2)
-            spacing: 0
-
-            ItemDelegate {
-              width: parent.width
-              text: "English"
-              highlighted: root.lang === "en"
-              font.family: root.fontFamily
-              onClicked: {
-                if (root.lang !== "en") {
-                  root.lang = "en"
-                  langSetProc.command = [root.cmd, "lang", "en"]
-                  langSetProc.running = true
-                }
-                root.langPopupOpen = false
-              }
-            }
-
-            ItemDelegate {
-              width: parent.width
-              text: "Portugu\u00eas"
-              highlighted: root.lang === "pt"
-              font.family: root.fontFamily
-              onClicked: {
-                if (root.lang !== "pt") {
-                  root.lang = "pt"
-                  langSetProc.command = [root.cmd, "lang", "pt"]
-                  langSetProc.running = true
-                }
-                root.langPopupOpen = false
-              }
-            }
-          }
+        PanelActionButton {
+          iconText: "\uf0ac"
+          tooltipText: root.tr.langTip
+          foreground: root.dim
+          fontFamily: root.fontFamily
+          onClicked: root.toggleLang()
         }
 
         PanelActionButton {
