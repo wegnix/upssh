@@ -847,6 +847,12 @@ cmd_connect() {
     "$name" "$user@$host:$port"
 
   if [[ $auth == password ]]; then
+    if ! command -v sshpass &>/dev/null; then
+      err "Optional dependencies missing for password logins and file dialogs:"
+      err "  sudo pacman -S --needed sshpass zenity"
+      hold
+      return 1
+    fi
     local pw
     pw=$(get_password "$id")
     if [[ -n $pw ]]; then
