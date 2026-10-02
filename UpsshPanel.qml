@@ -1481,15 +1481,11 @@ Panel {
           onClicked: root.syncMenu()
         }
 
-        Ui.Button {
-          text: root.lang === "en" ? "EN" : "PT"
-          implicitWidth: Style.space(40)
-          implicitHeight: Style.space(24)
+        PanelActionButton {
+          iconText: "\uf0ac"
+          tooltipText: root.tr.langTip
           foreground: root.dim
-          accent: root.accent
           fontFamily: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
           onClicked: root.toggleLang()
         }
 
